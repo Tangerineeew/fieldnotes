@@ -31,7 +31,10 @@ var require_limits = __commonJS({
       maxImageBytes: 4194304,
       maxContentChars: 24e3,
       maxContentBytes: 4e4,
-      maxPropertiesBytes: 32e3
+      maxPropertiesBytes: 32e3,
+      maxCommentChars: 2e3,
+      maxQuoteChars: 500,
+      quoteContextChars: 32
     };
   }
 });
@@ -9058,6 +9061,7 @@ var require_collab = __commonJS({
     var COMPACT_AFTER = 100;
     var ROOTS = /* @__PURE__ */ new Set(["title", "content", "properties", "meta"]);
     var COLORS = ["#8b5cf6", "#ec4899", "#10b981", "#f59e0b", "#f97316", "#3b82f6", "#14b8a6", "#ef4444"];
+    var personColor = (userId) => COLORS[userId % COLORS.length];
     var b64 = (bytes2) => Buffer.from(bytes2).toString("base64");
     var bytes = (text) => new Uint8Array(Buffer.from(text, "base64"));
     var whenValid = (check) => {
@@ -9095,7 +9099,7 @@ var require_collab = __commonJS({
           const user = await ctx.users.getById(userId).catch(() => null);
           nameCache.set(userId, user?.display_name || user?.username || `#${userId}`);
         }
-        return { name: nameCache.get(userId), color: COLORS[userId % COLORS.length] };
+        return { name: nameCache.get(userId), color: personColor(userId) };
       }
       function seed(note) {
         const doc = new Y.Doc();
@@ -9296,7 +9300,7 @@ var require_collab = __commonJS({
       text.delete(start, current.length - start - end);
       text.insert(start, value.slice(start, value.length - end));
     }
-    module2.exports = { createCollab };
+    module2.exports = { createCollab, personColor };
   }
 });
 
@@ -9308,9 +9312,17 @@ var require_service = __commonJS({
     var dns = require("node:dns/promises");
     var https = require("node:https");
     var { isIP } = require("node:net");
-    var { maxImageBytes, maxContentChars, maxContentBytes, maxPropertiesBytes } = require_limits();
+    var {
+      maxImageBytes,
+      maxContentChars,
+      maxContentBytes,
+      maxPropertiesBytes,
+      maxCommentChars,
+      maxQuoteChars,
+      quoteContextChars
+    } = require_limits();
     var { createAssets } = require_assets();
-    var { createCollab } = require_collab();
+    var { createCollab, personColor } = require_collab();
     var Problem = class extends Error {
       constructor(status, message, params2 = {}) {
         super(message.replace(/\{(\w+)\}/g, (match, name) => String(params2[name] ?? match)));
@@ -9467,6 +9479,7 @@ var require_service = __commonJS({
     var hostNotAllowed = "Image host is not allowed. Paste the image itself, or ask an admin to allow this host.";
     var maxSnapshotAssetsBytes = 32 * 1024 * 1024;
     var maxSnapshotAssets = 100 - 2;
+    var maxCommentsPerNote = 500;
     var allowedImageTypes = /* @__PURE__ */ new Set(["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"]);
     function imageSources(content) {
       const sources = /* @__PURE__ */ new Set();
@@ -9701,6 +9714,12 @@ var require_service = __commonJS({
     id TEXT NOT NULL, owner_id INTEGER NOT NULL, part INTEGER NOT NULL, parts INTEGER NOT NULL,
     data TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (id, part)
   ); CREATE INDEX asset_uploads_created ON asset_uploads(created_at);`);
+      await ctx.db.migrate("014_trip_note_comments", `CREATE TABLE trip_note_comments (
+    id TEXT PRIMARY KEY, trip_id INTEGER NOT NULL, note_id TEXT NOT NULL, parent_id TEXT, author_id INTEGER NOT NULL,
+    body TEXT NOT NULL, quote TEXT, prefix TEXT, suffix TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    resolved_at TEXT, resolved_by INTEGER
+  ); CREATE INDEX trip_note_comments_note ON trip_note_comments(trip_id, note_id, created_at);
+  CREATE INDEX trip_note_comments_author ON trip_note_comments(author_id);`);
     }
     var roleValue = (role) => {
       if (role === "editor") return 2;
@@ -9921,7 +9940,7 @@ var require_service = __commonJS({
       }
       fail(400, "Unknown trip folder action.");
     }
-    async function tripNotes(ctx, tripId, folderId = null) {
+    async function tripNotes(ctx, tripId, folderId = null, actorId = null) {
       const trip = await checkTrip(ctx, tripId);
       const links = await ctx.db.query(
         "SELECT note_id, source_owner_id, mode, day_id, linked_at FROM trip_note_links WHERE trip_id = ? ORDER BY linked_at, note_id",
@@ -9938,7 +9957,9 @@ var require_service = __commonJS({
         ctx.db.query("SELECT * FROM notes WHERE id IN (SELECT value FROM json_each(?))", JSON.stringify(ids)),
         ctx.db.query("SELECT * FROM trip_note_snapshots WHERE trip_id = ?", trip.id)
       ]);
-      const notesById = new Map(rows.map((row) => [row.id, decode(row)]));
+      const access = actorId ? await listAccessData(ctx, actorId) : null;
+      const canSnapshot = (row) => Boolean(access && noteAccessFromRows(actorId, row, access).canRead);
+      const notesById = new Map(rows.map((row) => [row.id, { ...decode(row), can_snapshot: canSnapshot(row) }]));
       const snapshotsById = new Map(snapshots.map((row) => [row.note_id, decode(row)]));
       const notes = visibleLinks.map((link) => {
         const noteId = link.note_id;
@@ -10176,11 +10197,10 @@ var require_service = __commonJS({
       if (/^https:\/\//i.test(source)) return { source, ...await fetchExternalImage(source) };
       fail(400, "Unsupported image source.");
     }
-    async function captureSnapshotAssets(ctx, note) {
-      const sources = imageSources(note.content);
+    async function captureSnapshotAssets(ctx, sources, keptBytes = 0) {
       if (sources.length > maxSnapshotAssets) fail(400, "A snapshot can include at most {count} images.", { count: maxSnapshotAssets });
       const assets = [];
-      let totalBytes = 0;
+      let totalBytes = keptBytes;
       for (const source of sources) {
         const file = tripFileSource(source);
         let image;
@@ -10202,9 +10222,7 @@ var require_service = __commonJS({
     async function beginTripNote(ctx, input) {
       const trip = await checkTrip(ctx, input.trip_id);
       await requireTripEdit(ctx, trip.id);
-      const ownerId = number(input.actor_id);
-      const members = await ctx.trips.members(trip.id);
-      if (Number(trip.user_id) !== ownerId && !members.some((member) => Number(member.id) === ownerId)) fail(403, "Trip member not found.");
+      const ownerId = await tripActor(ctx, trip, input.actor_id);
       const tripFolderId = input.trip_folder_id ? id2(input.trip_folder_id) : null;
       if (tripFolderId) {
         const [folder] = await ctx.db.query("SELECT id FROM trip_folders WHERE id = ? AND trip_id = ? AND archived = 0", tripFolderId, trip.id);
@@ -10273,7 +10291,7 @@ var require_service = __commonJS({
       const [existing] = await ctx.db.query("SELECT note_id FROM trip_note_links WHERE trip_id = ? AND note_id = ?", trip.id, note.id);
       if (existing) fail(409, "Already linked. Remove the existing link before replacing it.");
       const linkedAt = (/* @__PURE__ */ new Date()).toISOString();
-      const assets = input.mode === "snapshot" ? await captureSnapshotAssets(ctx, note) : [];
+      const assets = input.mode === "snapshot" ? await captureSnapshotAssets(ctx, imageSources(note.content)) : [];
       const ops = [{
         sql: `INSERT INTO trip_note_links (trip_id, note_id, source_owner_id, linked_by, mode, day_id, linked_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -10316,6 +10334,184 @@ var require_service = __commonJS({
       }
       return { linked: true };
     }
+    async function tripActor(ctx, trip, actorId) {
+      const userId = Number(actorId);
+      if (!Number.isSafeInteger(userId) || userId < 1) fail(401, "Sign in first.");
+      const members = await ctx.trips.members(trip.id);
+      if (Number(trip.user_id) !== userId && !members.some((member) => Number(member.id) === userId)) fail(403, "Trip member not found.");
+      return userId;
+    }
+    async function tripLink(ctx, tripId, noteId) {
+      const [link] = await ctx.db.query("SELECT * FROM trip_note_links WHERE trip_id = ? AND note_id = ?", tripId, noteId);
+      return link || fail(404, "Linked note not found.");
+    }
+    async function tripNote(ctx, tripId, noteId, actorId) {
+      const note = (await tripNotes(ctx, tripId, null, actorId)).notes.find((item) => item.id === noteId);
+      return note || fail(404, "Linked note not found.");
+    }
+    async function saveSnapshot(ctx, trip, input, actorId) {
+      await requireTripEdit(ctx, trip.id);
+      const noteId = id2(input.note_id);
+      const [current] = await ctx.db.query("SELECT * FROM trip_note_snapshots WHERE trip_id = ? AND note_id = ?", trip.id, noteId);
+      if (!current) fail(404, "Snapshot not found.");
+      if (input.version !== current.version) fail(409, "This note changed. Reload before saving.");
+      const { title, content } = noteFields(input);
+      const properties = input.properties === void 0 ? null : propertyFields(input.properties);
+      const icon = input.icon === void 0 ? void 0 : noteIcon(input.icon);
+      const sources = imageSources(content);
+      if (sources.length > maxSnapshotAssets) fail(400, "A snapshot can include at most {count} images.", { count: maxSnapshotAssets });
+      const stored = await ctx.db.query("SELECT source, size FROM snapshot_assets WHERE trip_id = ? AND note_id = ?", trip.id, noteId);
+      const kept = stored.filter((row) => sources.includes(row.source));
+      const keptSources = new Set(kept.map((row) => row.source));
+      const added = await captureSnapshotAssets(
+        ctx,
+        sources.filter((source) => !keptSources.has(source)),
+        kept.reduce((total, row) => total + row.size, 0)
+      );
+      const guard = "EXISTS (SELECT 1 FROM trip_note_snapshots WHERE trip_id = ? AND note_id = ? AND version = ?)";
+      const guardArgs = [trip.id, noteId, current.version];
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      await ctx.db.tx([
+        { sql: `DELETE FROM snapshot_assets WHERE trip_id = ? AND note_id = ? AND source NOT IN (SELECT value FROM json_each(?))
+      AND ${guard}`, args: [trip.id, noteId, JSON.stringify([...keptSources]), ...guardArgs] },
+        ...added.map((asset2) => ({
+          sql: `INSERT OR REPLACE INTO snapshot_assets (trip_id, note_id, source, mimetype, size, content_base64)
+        SELECT ?, ?, ?, ?, ?, ? WHERE ${guard}`,
+          args: [trip.id, noteId, asset2.source, asset2.mimetype, asset2.size, asset2.content_base64, ...guardArgs]
+        })),
+        {
+          sql: `UPDATE trip_note_snapshots SET title = ?, content = ?, properties = COALESCE(?, properties),
+      icon = CASE WHEN ? THEN ? ELSE icon END, version = version + 1, updated_at = ?
+      WHERE trip_id = ? AND note_id = ? AND version = ?`,
+          args: [title, content, properties, icon !== void 0 ? 1 : 0, icon ?? null, now, ...guardArgs]
+        }
+      ]);
+      const saved = await tripNote(ctx, trip.id, noteId, actorId);
+      if (saved.updated_at !== now) fail(409, "This note changed. Reload before saving.");
+      return saved;
+    }
+    async function convertToSnapshot(ctx, trip, input, actorId) {
+      await requireTripEdit(ctx, trip.id);
+      const noteId = id2(input.note_id);
+      const link = await tripLink(ctx, trip.id, noteId);
+      if (link.mode !== "live") fail(409, "This note is already a snapshot.");
+      const note = await readable(ctx, actorId, noteId).catch((error) => {
+        if (error instanceof Problem && error.status === 404)
+          fail(403, "Only people who can read this note in Fieldnotes can turn it into a snapshot.");
+        throw error;
+      });
+      const assets = await captureSnapshotAssets(ctx, imageSources(note.content));
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      await ctx.db.tx([
+        {
+          sql: `INSERT INTO trip_note_snapshots (trip_id, note_id, title, content, tags, properties, icon, version,
+      updated_at, visibility, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [
+            trip.id,
+            note.id,
+            note.title,
+            note.content,
+            JSON.stringify(note.tags),
+            JSON.stringify(note.properties),
+            note.icon ?? null,
+            note.version,
+            note.updated_at,
+            note.visibility,
+            now
+          ]
+        },
+        ...assets.map((asset2) => ({
+          sql: `INSERT INTO snapshot_assets (trip_id, note_id, source, mimetype, size, content_base64) VALUES (?, ?, ?, ?, ?, ?)`,
+          args: [trip.id, note.id, asset2.source, asset2.mimetype, asset2.size, asset2.content_base64]
+        })),
+        { sql: "UPDATE trip_note_links SET mode = 'snapshot' WHERE trip_id = ? AND note_id = ? AND mode = 'live'", args: [trip.id, note.id] }
+      ]).catch((error) => {
+        if (/UNIQUE constraint failed: trip_note_snapshots/.test(error.message)) fail(409, "This note is already a snapshot.");
+        throw error;
+      });
+      return tripNote(ctx, trip.id, noteId, actorId);
+    }
+    var commentBody = (value) => {
+      const body = text(value, maxCommentChars, "comment").trim();
+      return body || fail(400, "A comment cannot be empty.");
+    };
+    var commentAnchor = (input) => {
+      if (input.quote === void 0 || input.quote === null || input.quote === "") return [null, null, null];
+      const quote = text(input.quote, maxQuoteChars, "quote").trim();
+      const context = (value) => text(value ?? "", quoteContextChars, "quote context");
+      return quote ? [quote, context(input.prefix), context(input.suffix)] : [null, null, null];
+    };
+    async function tripComments(ctx, trip, noteId) {
+      const rows = await ctx.db.query(`SELECT id, parent_id, author_id, body, quote, prefix, suffix, created_at, updated_at, resolved_at,
+    resolved_by FROM trip_note_comments WHERE trip_id = ? AND note_id = ? ORDER BY created_at, rowid`, trip.id, noteId);
+      const people = new Map((await ctx.trips.members(trip.id)).map((member) => [Number(member.id), member]));
+      for (const authorId of new Set(rows.map((row) => row.author_id))) {
+        if (!people.has(authorId)) people.set(authorId, await ctx.users.getById(authorId) || { id: authorId });
+      }
+      return rows.map((row) => ({ ...row, author: { ...people.get(row.author_id), color: personColor(row.author_id) } }));
+    }
+    async function commentAction(input, ctx, trip, actorId) {
+      const noteId = id2(input.note_id);
+      await tripLink(ctx, trip.id, noteId);
+      if (input.action === "comments") return tripComments(ctx, trip, noteId);
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      if (input.action === "comment_add") {
+        const body = commentBody(input.body);
+        const parentId = input.parent_id ? id2(input.parent_id) : null;
+        if (parentId) {
+          const [parent] = await ctx.db.query(`SELECT id FROM trip_note_comments
+        WHERE id = ? AND trip_id = ? AND note_id = ? AND parent_id IS NULL`, parentId, trip.id, noteId);
+          if (!parent) fail(404, "Comment not found.");
+        }
+        const [{ count }] = await ctx.db.query(
+          "SELECT COUNT(*) AS count FROM trip_note_comments WHERE trip_id = ? AND note_id = ?",
+          trip.id,
+          noteId
+        );
+        if (count >= maxCommentsPerNote) fail(400, "A note can hold at most {count} comments.", { count: maxCommentsPerNote });
+        const [quote, prefix, suffix] = parentId ? [null, null, null] : commentAnchor(input);
+        await ctx.db.exec(
+          `INSERT INTO trip_note_comments (id, trip_id, note_id, parent_id, author_id, body, quote, prefix, suffix,
+      created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          randomUUID(),
+          trip.id,
+          noteId,
+          parentId,
+          actorId,
+          body,
+          quote,
+          prefix,
+          suffix,
+          now,
+          now
+        );
+        return tripComments(ctx, trip, noteId);
+      }
+      const [comment] = await ctx.db.query(
+        "SELECT * FROM trip_note_comments WHERE id = ? AND trip_id = ? AND note_id = ?",
+        id2(input.comment_id),
+        trip.id,
+        noteId
+      );
+      if (!comment) fail(404, "Comment not found.");
+      if (input.action === "comment_edit") {
+        if (comment.author_id !== actorId) fail(403, "Only the author can edit a comment.");
+        await ctx.db.exec("UPDATE trip_note_comments SET body = ?, updated_at = ? WHERE id = ?", commentBody(input.body), now, comment.id);
+      } else if (input.action === "comment_delete") {
+        if (comment.author_id !== actorId) await requireTripEdit(ctx, trip.id);
+        await ctx.db.exec("DELETE FROM trip_note_comments WHERE id = ? OR parent_id = ?", comment.id, comment.id);
+      } else if (input.action === "comment_resolve") {
+        if (comment.parent_id) fail(400, "Only a whole thread can be resolved.");
+        const resolved = input.resolved === true;
+        await ctx.db.exec(
+          "UPDATE trip_note_comments SET resolved_at = ?, resolved_by = ? WHERE id = ?",
+          resolved ? now : null,
+          resolved ? actorId : null,
+          comment.id
+        );
+      } else fail(400, "Unknown action.");
+      return tripComments(ctx, trip, noteId);
+    }
     async function tripAction2(input, ctx, authenticatedUserId = null) {
       if (input.action === "links") {
         if (!Number.isSafeInteger(authenticatedUserId) || authenticatedUserId < 1) fail(401, "Sign in first.");
@@ -10333,7 +10529,11 @@ var require_service = __commonJS({
       if (["folders", "folder_create", "folder_icon", "folder_archive", "folder_move", "folder_parent"].includes(input.action)) {
         return tripFolderAction(input, ctx);
       }
-      if (input.action === "list") return tripNotes(ctx, tripId, input.folder_id ? id2(input.folder_id) : null);
+      if (input.action === "list") {
+        const actorId = authenticatedUserId ?? input.actor_id;
+        const trip = await checkTrip(ctx, tripId);
+        return tripNotes(ctx, trip.id, input.folder_id ? id2(input.folder_id) : null, actorId ? await tripActor(ctx, trip, actorId) : null);
+      }
       if (input.action === "asset") return asset(ctx, null, input);
       if (input.action === "begin_note") return beginTripNote(ctx, input);
       await checkTrip(ctx, tripId);
@@ -10347,21 +10547,32 @@ var require_service = __commonJS({
         await requireTripEdit(ctx, tripId);
         await ctx.db.tx([
           { sql: "DELETE FROM trip_note_folders WHERE trip_id = ? AND note_id = ?", args: [tripId, noteId] },
+          { sql: "DELETE FROM trip_note_comments WHERE trip_id = ? AND note_id = ?", args: [tripId, noteId] },
           { sql: "DELETE FROM snapshot_assets WHERE trip_id = ? AND note_id = ?", args: [tripId, noteId] },
           { sql: "DELETE FROM trip_note_snapshots WHERE trip_id = ? AND note_id = ?", args: [tripId, noteId] },
           { sql: "DELETE FROM trip_note_links WHERE trip_id = ? AND note_id = ?", args: [tripId, noteId] }
         ]);
         return { removed: true };
       }
-      if (input.action === "excerpt") {
-        const { notes } = await tripNotes(ctx, tripId);
-        const note = notes.find((item) => item.id === id2(input.note_id) && !item.unavailable);
-        if (!note) fail(404, "Linked note not found.");
-        const dayId = await checkDay(ctx, tripId, input.day_id);
-        if (!dayId) fail(400, "Choose a day.");
-        const excerpt = text(input.text, 500, "excerpt").trim();
-        if (!excerpt) fail(400, "An excerpt is required.");
-        return ctx.daynotes.create(tripId, dayId, { text: excerpt });
+      if ([
+        "comments",
+        "comment_add",
+        "comment_edit",
+        "comment_delete",
+        "comment_resolve",
+        "snapshot_save",
+        "snapshot_convert",
+        "upload"
+      ].includes(input.action)) {
+        const trip = await checkTrip(ctx, tripId);
+        const actorId = await tripActor(ctx, trip, authenticatedUserId ?? input.actor_id);
+        if (input.action === "snapshot_save") return saveSnapshot(ctx, trip, input, actorId);
+        if (input.action === "snapshot_convert") return convertToSnapshot(ctx, trip, input, actorId);
+        if (input.action === "upload") {
+          await requireTripEdit(ctx, trip.id);
+          return uploads.upload(ctx, actorId, input);
+        }
+        return commentAction(input, ctx, trip, actorId);
       }
       fail(400, "Unknown action.");
     }
@@ -10584,6 +10795,11 @@ var require_service = __commonJS({
         { sql: "DELETE FROM note_presence WHERE user_id = ? OR note_id IN (SELECT id FROM notes WHERE owner_id = ?)", args: [userId, userId] },
         { sql: "DELETE FROM note_updates WHERE note_id IN (SELECT id FROM notes WHERE owner_id = ?)", args: [userId] },
         { sql: "DELETE FROM note_crdt WHERE note_id IN (SELECT id FROM notes WHERE owner_id = ?)", args: [userId] },
+        // A thread goes with its opening comment; the links removed below take their discussions along.
+        { sql: `DELETE FROM trip_note_comments WHERE author_id = ? OR parent_id IN (SELECT id FROM trip_note_comments WHERE author_id = ?)
+      OR note_id IN (SELECT id FROM notes WHERE owner_id = ?) OR EXISTS (
+      SELECT 1 FROM trip_note_links l WHERE l.trip_id = trip_note_comments.trip_id AND l.note_id = trip_note_comments.note_id
+      AND (l.source_owner_id = ? OR l.linked_by = ?))`, args: [userId, userId, userId, userId, userId] },
         { sql: `DELETE FROM trip_note_folders WHERE EXISTS (
       SELECT 1 FROM trip_note_links l WHERE l.trip_id = trip_note_folders.trip_id AND l.note_id = trip_note_folders.note_id
       AND (l.source_owner_id = ? OR l.linked_by = ?))`, args: [userId, userId] },
@@ -10620,7 +10836,8 @@ var require_service = __commonJS({
         folderCollaborators2,
         tripLinks,
         tripSnapshots,
-        tripSnapshotAssets
+        tripSnapshotAssets,
+        tripNoteComments
       ] = await Promise.all([
         ctx.db.query("SELECT * FROM notes WHERE owner_id = ?", userId),
         ctx.db.query("SELECT * FROM note_assets WHERE owner_id = ?", userId),
@@ -10639,9 +10856,20 @@ var require_service = __commonJS({
         ctx.db.query(`SELECT s.* FROM trip_note_snapshots s JOIN trip_note_links l USING (trip_id, note_id)
       WHERE l.source_owner_id = ? OR l.linked_by = ?`, userId, userId),
         ctx.db.query(`SELECT a.* FROM snapshot_assets a JOIN trip_note_links l USING (trip_id, note_id)
-      WHERE l.source_owner_id = ? OR l.linked_by = ?`, userId, userId)
+      WHERE l.source_owner_id = ? OR l.linked_by = ?`, userId, userId),
+        ctx.db.query("SELECT * FROM trip_note_comments WHERE author_id = ?", userId)
       ]);
-      return { notes, noteAssets, folders, noteCollaborators, folderCollaborators: folderCollaborators2, tripLinks, tripSnapshots, tripSnapshotAssets };
+      return {
+        notes,
+        noteAssets,
+        folders,
+        noteCollaborators,
+        folderCollaborators: folderCollaborators2,
+        tripLinks,
+        tripSnapshots,
+        tripSnapshotAssets,
+        tripComments: tripNoteComments
+      };
     }
     var json = (status, value) => ({ status, headers: { "content-type": "application/json" }, body: JSON.stringify(value) });
     async function respond2(fn) {
@@ -10691,7 +10919,8 @@ module.exports = definePlugin({
     handler: (req, ctx) => respond(() => handle(action, req, ctx))
   })),
   exports: {
-    // Only trip-scoped operations are exposed. No caller-supplied user identity is trusted.
+    // Only trip-scoped operations are exposed. The companion stamps `actor_id` from its signed-in request; it is accepted only
+    // for a member of the trip the acting user can open, and links stay tied to the authenticated Fieldnotes route.
     trip: (args2, ctx) => respond(() => tripAction(args2, ctx))
   },
   hooks: {

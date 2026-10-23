@@ -1,12 +1,20 @@
 import React, { useState } from 'react';
 import type { Translate } from './i18n';
+import { firstGrapheme } from './note-icon';
 
 
 export type Role = 'editor' | 'viewer';
-export type Person = { id: number; username?: string; display_name?: string | null };
+export type Person = { id: number; username?: string; display_name?: string | null; color?: string };
 export type Collaborator = { user_id: number; role: Role; user: Person };
 
 export const personName = (person: Person) => person.display_name || person.username || `#${person.id}`;
+
+// A person's initial on their colour. TREK's avatar images need a signed-in request and same-origin access, and
+// neither the sandboxed page nor the plugin server has that, so photos cannot be shown here.
+export function Avatar({ name, color, className = '' }: { name: string; color?: string; className?: string }) {
+  return <span className={`fn-avatar ${className}`} style={{ '--peer': color || 'var(--accent)' } as React.CSSProperties} title={name}
+    aria-hidden="true">{firstGrapheme(name).toUpperCase()}</span>;
+}
 
 
 // Who can access one note or folder: current members with staged role edits, plus people picked to be added.
@@ -62,6 +70,9 @@ export function CollaboratorEditor({ state, busy, t, removeLabel, addLabel, onAd
         people={state.candidates.filter((person) => !state.items.some((item) => item.user_id === person.id))}
         selected={state.selected} roles={state.candidateRoles} onChange={state.setSelected} t={t}
         onRoleChange={(id, role) => state.setCandidateRoles((current) => ({ ...current, [id]: role }))} />
+      <small className="trek-muted fn-person-hint">
+        {t('Only people who share a trip with you are listed.', '仅列出与你同行的成员。')}
+      </small>
       <button className="trek-btn trek-btn--secondary" disabled={!state.selected.length}>{t('Add selected', '添加选中成员')}</button>
     </form>
   </>;

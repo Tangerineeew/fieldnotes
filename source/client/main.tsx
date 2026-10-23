@@ -11,9 +11,13 @@ import { IconPicker, NoteIcon, firstGrapheme } from './note-icon';
 import type { Extension } from '@codemirror/state';
 import { PropertyEditor, PropertyList, selectedLabels, type Property } from './properties';
 import { translate, type Translate } from './i18n';
-import { RequestError, withErrors } from './api';
+import { RequestError, withErrors, type Invoke } from './api';
 import { CollaboratorEditor, useCollaborators, type Collaborator, type Person } from './collaborators';
 import { FolderField, VisibilityField } from './note-fields';
+import { Icon } from './icons';
+import {
+  CommentPanel, QuoteButton, clearQuotes, paintQuotes, threadAt, threadsOf, type Anchor, type Comment
+} from './comments';
 import './style.css';
 
 type Context = { tripId: string | null; locale: string; userId: number };
@@ -21,7 +25,7 @@ type TripCreateIntent = { tripId: number; tripFolderId: string | null; title: st
 type Note = {
   id: string; title: string; content: string; icon?: string | null; properties?: Property[]; version: number;
   created_at?: string; updated_at: string; owner_id?: number; visibility?: 'private' | 'public'; folder_id?: string | null;
-  can_edit?: boolean; mode?: 'live' | 'snapshot'; day_id?: number | null; unavailable?: boolean
+  can_edit?: boolean; mode?: 'live' | 'snapshot'; day_id?: number | null; unavailable?: boolean; can_snapshot?: boolean
 };
 type Folder = {
   id: string; owner_id: number; parent_id: string | null; name: string; icon?: string | null; visibility: 'private' | 'public';
@@ -50,6 +54,7 @@ interface Bridge {
 declare global { interface Window { trek: Bridge } }
 const trek = window.trek;
 const PAGE_SIZE = 7;
+const COMMENT_POLL_MS = 30_000;
 const empty: Draft = { title: '', content: '', icon: null, properties: [], visibility: 'private', folder_id: null };
 const invoke = withErrors((path, options) => trek.invoke(path, options), () => trek.context?.locale);
 const post = <T,>(path: string, body: unknown) => invoke<T>(path, { method: 'POST', body });
@@ -150,15 +155,23 @@ function App() {
   const [days, setDays] = useState<Day[]>([]);
   const [dayId, setDayId] = useState('');
   const [mode, setMode] = useState('live');
-  const [excerpt, setExcerpt] = useState('');
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const [pendingQuote, setPendingQuote] = useState<Anchor | null>(null);
+  const [activeThread, setActiveThread] = useState<string | null>(null);
+  const [locatedThreads, setLocatedThreads] = useState<Set<string>>(new Set());
+  const [renderedAt, setRenderedAt] = useState(0);
+  const noteArticle = useRef<HTMLElement | null>(null);
+  const quoteRanges = useRef(new Map<string, Range>());
   const [tripTitle, setTripTitle] = useState('');
   const [canEditTrip, setCanEditTrip] = useState(false);
   const [createTripId, setCreateTripId] = useState<number | null>(null);
   const [createTripFolderId, setCreateTripFolderId] = useState<string | null>(null);
   const [createTripTitle, setCreateTripTitle] = useState('');
   const titleInput = useRef<HTMLInputElement>(null);
-  // Existing notes save continuously through collaboration; only the new-note form can hold unsaved input.
-  const dirty = editing && !note && JSON.stringify(draft) !== JSON.stringify(empty);
+  // Library notes save continuously through collaboration; only the new-note form and a trip snapshot's form hold unsaved input.
+  const dirty = editing && (note ? Boolean(tripId) && JSON.stringify(draft) !== JSON.stringify(draftOf(note))
+    : JSON.stringify(draft) !== JSON.stringify(empty));
   const latestRequest = useRef(0);
   const permissionModal = useRef<HTMLElement>(null);
   const permissionTrigger = useRef<HTMLElement>(null);
@@ -181,6 +194,24 @@ function App() {
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
   }, [dirty]);
+
+  // Quoted passages are re-found whenever the note re-renders or its discussion changes.
+  useEffect(() => {
+    if (!tripId || !note || editing) { clearQuotes(); quoteRanges.current = new Map(); return; }
+    quoteRanges.current = paintQuotes(noteArticle.current, threadsOf(comments), activeThread);
+    const found = new Set(quoteRanges.current.keys());
+    setLocatedThreads((current) => current.size === found.size && [...found].every((id) => current.has(id)) ? current : found);
+  }, [tripId, note, editing, comments, activeThread, renderedAt]);
+  useEffect(() => clearQuotes, []);
+  // Others' comments arrive by polling while the note is on screen.
+  useEffect(() => {
+    if (!tripId || !note || note.unavailable) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible' || lock.current) return;
+      void post<Comment[]>('/trip', { action: 'comments', trip_id: tripId, note_id: note.id }).then(setComments).catch(() => {});
+    }, COMMENT_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [tripId, note?.id, note?.unavailable]);
 
   async function run(fn: () => Promise<void>, options: { silent?: boolean } = {}) {
     if (lock.current) return;
@@ -283,6 +314,11 @@ function App() {
     if (/was deleted/i.test(message)) return t('the image was deleted', '图片已被删除');
     return t('image could not be loaded', '图片无法加载');
   }
+  // Trip pages reach Fieldnotes only through the companion's /trip route, which uploads on behalf of snapshot editors.
+  const uploader: Invoke = tripId
+    ? <T,>(_path: string, options?: { method: string; body: unknown }) =>
+      post<T>('/trip', { action: 'upload', trip_id: tripId, ...(options?.body as object) })
+    : invoke;
   // Uploads queue apart from run(), so an image pasted during a save is never dropped.
   // Files go one at a time, each inserted where the caret is once it is stored.
   function addImages(files: File[], insert: (markdown: string) => void) {
@@ -291,7 +327,7 @@ function App() {
       try {
         for (const [index, file] of files.entries()) {
           setStatus(t('Uploading image {current}/{total}…', '正在上传图片 {current}/{total}…', { current: index + 1, total: files.length }));
-          const image = await uploadImage(invoke, file);
+          const image = await uploadImage(uploader, file);
           requestedImages.current.add(`${note?.id} ${image.source}`);
           setImageSources((current) => ({ ...current, [image.source]: image.dataUrl }));
           insert(`![${image.alt}](${image.source})`);
@@ -347,12 +383,64 @@ function App() {
     if (!tripId) { setTarget(''); setDayId(''); setDays([]); }
     const next = tripId ? item : await invoke<Note>(`/note?id=${item.id}`);
     setNote(next); setImageSources({}); setReferenceLinks({}); setDraft(next.unavailable ? empty : draftOf(next)); setEditing(false);
-    setLinkedTrips([]);
+    setLinkedTrips([]); setComments([]); setPendingQuote(null); setActiveThread(null);
     if (!next.unavailable) {
       await hydrateImages(next, tripId); await hydrateReferences(next, tripId);
-      await loadCollaborators(next); await loadLinkedTrips(next);
+      await loadCollaborators(next); await loadLinkedTrips(next); await loadComments(next);
     }
-    setExcerpt(next.content && `${next.title}\n\n${next.content}`.length <= 500 ? `${next.title}\n\n${next.content}` : next.title || '');
+  }
+  async function loadComments(item: Note) {
+    if (!tripId || item.unavailable) { setComments([]); return; }
+    setComments(await post<Comment[]>('/trip', { action: 'comments', trip_id: tripId, note_id: item.id }));
+  }
+  // Comment writes return the note's whole discussion, so the panel always shows what the server holds.
+  async function commentRequest(input: Record<string, unknown>) {
+    if (!tripId || !note) return false;
+    let sent = false;
+    await run(async () => {
+      setComments(await post<Comment[]>('/trip', { trip_id: tripId, note_id: note.id, ...input })); sent = true;
+    }, { silent: true });
+    return sent;
+  }
+  const commentActions = {
+    add: async (body: string, anchor: Anchor | null) => {
+      const sent = await commentRequest({ action: 'comment_add', body, ...anchor });
+      if (sent) setPendingQuote(null);
+      return sent;
+    },
+    reply: (rootId: string, body: string) => commentRequest({ action: 'comment_add', parent_id: rootId, body }),
+    edit: (commentId: string, body: string) => commentRequest({ action: 'comment_edit', comment_id: commentId, body }),
+    remove: (comment: Comment) => void (async () => {
+      const message = comment.parent_id ? t('Delete this reply?', '删除这条回复？')
+        : t('Delete this comment and its replies?', '删除这条评论及其全部回复？');
+      if (await trek.confirm({ message, danger: true })) await commentRequest({ action: 'comment_delete', comment_id: comment.id });
+    })(),
+    resolve: (commentId: string, resolved: boolean) => {
+      if (resolved && activeThread === commentId) setActiveThread(null);
+      void commentRequest({ action: 'comment_resolve', comment_id: commentId, resolved });
+    },
+  };
+  function quote(anchor: Anchor) {
+    setPendingQuote(anchor); setActiveThread(null); setCommentsOpen(true);
+  }
+  async function convertToSnapshot() {
+    if (!tripId || !note) return;
+    if (!await trek.confirm({
+      confirmLabel: t('Convert', '转换'),
+      message: t('Convert to a snapshot? The trip keeps its own copy, which no longer follows the author’s edits and stays if they leave.',
+        '转为独立快照？旅行会保留一份副本，不再同步作者之后的修改，作者删除原文或离开旅行也不受影响。')
+    })) return;
+    const saved = await post<Note>('/trip', { action: 'snapshot_convert', trip_id: tripId, note_id: note.id });
+    setNote(saved); setDraft(draftOf(saved)); await load(); setStatus(t('Converted to a snapshot.', '已转为独立快照。'));
+  }
+  async function removeFromTrip() {
+    if (!tripId || !note) return;
+    const message = note.mode === 'snapshot'
+      ? t('Remove this snapshot from the trip? The copy and its comments are deleted.', '从旅行中移除这份快照？副本及其评论都会被删除。')
+      : t('Remove from this trip? The original stays in the library; comments here are deleted.',
+        '从旅行中移除？图书馆中的原文会保留，这里的评论会被删除。');
+    if (!await trek.confirm({ message, danger: true })) return;
+    await post('/trip', { action: 'unlink', trip_id: tripId, note_id: note.id }); setNote(null); await load();
   }
   async function openReference(id: string) {
     await choose({ id } as Note);
@@ -439,12 +527,6 @@ function App() {
     catch (error) { console.warn('[Fieldnotes] Could not persist sorting preference.', error); }
     if (!tripId) await load(query, 0, publicMode, selectedFolderId, next);
   }
-  async function moveTripNote(folderId: string) {
-    if (!tripId || !note || note.unavailable) return;
-    await post('/trip', { action: 'folder_move', trip_id: tripId, note_id: note.id, folder_id: folderId || null });
-    setNote({ ...note, folder_id: folderId || null });
-    await load(query, offset, false, selectedFolderId); setStatus(t('Moved to folder.', '已移动到文件夹。'));
-  }
   async function switchLibrary(nextPublic: boolean) {
     if (!await discard()) return;
     setContentMotion(nextPublic ? 'forward' : 'backward');
@@ -477,6 +559,15 @@ function App() {
         title: draft.title, content: draft.content, icon: draft.icon, properties: draft.properties
       });
       trek.navigate(`/trips/${createTripId}?tab=plugin%3Afieldnotes-trip`);
+      return;
+    }
+    if (tripId && note) {
+      const saved = await post<Note>('/trip', {
+        action: 'snapshot_save', trip_id: tripId, note_id: note.id, version: note.version, title: draft.title, content: draft.content,
+        icon: draft.icon, properties: draft.properties
+      });
+      setNote(saved); setDraft(draftOf(saved)); setEditing(false);
+      await hydrateImages(saved, tripId); await hydrateReferences(saved, tripId); await load(); setStatus(t('Saved.', '已保存。'));
       return;
     }
     const saved = await post<Note>('/save', {
@@ -529,6 +620,7 @@ function App() {
   async function backToLibrary() {
     if (!await discard()) return;
     setNote(null); setImageSources({}); setReferenceLinks({}); setEditing(false); setLinkedTrips([]); noteMembers.show(null);
+    setComments([]); setPendingQuote(null); setActiveThread(null);
   }
 
   // Collaborators may only freeze a private note into a trip; a live reference is the owner's call.
@@ -547,6 +639,9 @@ function App() {
     await loadLinkedTrips(note);
     setStatus(t('Added to trip. Open its Fieldnotes tab to read it.', '已添加。可在旅行的 Fieldnotes 标签页阅读。'));
   }
+  const threads = threadsOf(comments);
+  const openThreads = threads.filter((thread) => !thread.root.resolved_at).length;
+  const tripNoteOpen = Boolean(tripId && note);
   const folderNodes = folderTree(folders, collator);
   const folderDepths = new Map(folderNodes.map(({ folder, depth }) => [folder.id, depth]));
   const visibleFolders = folders.filter((folder) => !publicMode || folder.public_path);
@@ -674,7 +769,29 @@ function App() {
             : t('Write once. Keep it ready for every journey.', '把走过的路，写成下一次出发的底气。')}</p>
         </div>
       </div>
-      <div className="trek-cluster fn-header-actions">
+      {tripId && note ? <div className="trek-cluster fn-header-actions">
+        {!editing && !note.unavailable && <button className="trek-btn trek-btn--secondary fn-icon-button fn-comment-toggle"
+          aria-label={t('Comments', '评论')} title={t('Comments', '评论')} aria-pressed={commentsOpen}
+          onClick={() => setCommentsOpen(!commentsOpen)}>
+          <Icon name="comment" /><span className="fn-visually-hidden">{t('Comments', '评论')}</span>
+          {openThreads > 0 && <span className="fn-badge" aria-hidden="true">{openThreads}</span>}
+        </button>}
+        {canEditTrip && !editing && note.mode === 'live' && note.can_snapshot && <button
+          className="trek-btn trek-btn--secondary fn-icon-button" aria-label={t('Convert to snapshot', '转为独立快照')}
+          title={t('Convert to snapshot', '转为独立快照')} disabled={busy} onClick={() => void run(convertToSnapshot)}>
+          <Icon name="snapshot" /><span className="fn-visually-hidden">{t('Convert to snapshot', '转为独立快照')}</span>
+        </button>}
+        {canEditTrip && !editing && note.mode === 'snapshot' && !note.unavailable && <button
+          className="trek-btn trek-btn--primary fn-icon-button" aria-label={t('Edit snapshot', '编辑快照')} title={t('Edit snapshot', '编辑快照')}
+          disabled={busy} onClick={() => { setDraft(draftOf(note)); setCommentsOpen(false); setEditing(true); }}>
+          <Icon name="edit" /><span className="fn-visually-hidden">{t('Edit snapshot', '编辑快照')}</span>
+        </button>}
+        {canEditTrip && !editing && <button className="trek-btn trek-btn--secondary fn-icon-button fn-danger-icon"
+          aria-label={t('Remove from trip', '从旅行移除')} title={t('Remove from trip', '从旅行移除')} disabled={busy}
+          onClick={() => void run(removeFromTrip)}>
+          <Icon name="trash" /><span className="fn-visually-hidden">{t('Remove from trip', '从旅行移除')}</span>
+        </button>}
+      </div> : <div className="trek-cluster fn-header-actions">
         <button className="trek-btn trek-btn--secondary fn-icon-button" aria-label={t('Refresh', '刷新')} title={t('Refresh', '刷新')}
           disabled={busy} onClick={() => void run(async () => {
             if (await discard()) { setNote(null); setImageSources({}); setEditing(false); await load(); }
@@ -703,7 +820,7 @@ function App() {
             })}>
             <Icon name="plus" /><span className="fn-visually-hidden">{t('New note', '新建笔记')}</span>
           </button>}
-      </div>
+      </div>}
     </header>
     {error && <div className="fn-error" role="alert">{error}</div>}
     <p className="fn-status trek-muted" role="status">
@@ -719,8 +836,9 @@ function App() {
       <button type="button" role="tab" aria-selected={publicMode} className="fn-scope-tab" disabled={busy}
         onClick={() => void run(() => switchLibrary(true))}>{t('Public library', '公开图书馆')}</button>
     </div>}
-    <div className={`fn-layout${note || editing ? ' fn-layout-editor' : ''}`} aria-busy={busy}>
-      <aside className="trek-card fn-library"
+    <div className={`fn-layout${note || editing ? ' fn-layout-editor' : ''}${tripNoteOpen ? ' fn-layout-note' : ''}${
+      tripNoteOpen && commentsOpen && !editing ? ' fn-layout-comments' : ''}`} aria-busy={busy}>
+      {!tripNoteOpen && <aside className="trek-card fn-library"
         aria-label={note ? t('Note navigation', '笔记导航') : tripId ? t('Trip folders', '旅行文件夹') : t('Library folders', '图书馆文件夹')}>
         {note && <div className="fn-note-sidebar-header">
           <button type="button" className="trek-btn trek-btn--ghost fn-icon-button" aria-label={t('Back to library', '返回图书馆')}
@@ -793,23 +911,14 @@ function App() {
         {!note && !tripId && selectedFolder?.can_manage && !publicMode && <section className="fn-collaborators fn-folder-access"
           aria-labelledby="folder-access-heading">
           <div className="fn-detail-header">
-            <h3 id="folder-access-heading">{t('Folder access', '文件夹权限')}</h3><span className="trek-muted">{selectedFolder.name}</span>
+            <h3 id="folder-access-heading" className="fn-folder-title">
+              <span className="fn-eyebrow trek-muted">{t('Folder access', '文件夹权限')}</span><span>{selectedFolder.name}</span>
+            </h3>
           </div>
           <div className="fn-folder-settings">
             <FolderSettings folder={selectedFolder} idPrefix="folder" t={t} {...folderSettingsActions(selectedFolder)} />
           </div>
           {folderMemberEditor()}
-        </section>}
-        {tripId && note && !note.unavailable && <section className="fn-side-section fn-trip-folder-placement"
-          aria-labelledby="trip-folder-placement-heading">
-          <div className="fn-side-section-heading"><h3 id="trip-folder-placement-heading">{t('Folder', '文件夹')}</h3></div>
-          <select className="trek-select" value={note.folder_id || ''}
-            onChange={(event) => void run(() => moveTripNote(event.target.value))}>
-            <option value="">{t('No folder', '不放入文件夹')}</option>
-            {folderNodes.map(({ folder, depth }) => <option key={folder.id} value={folder.id}>
-              {'— '.repeat(depth)}{folder.icon} {folder.name}
-            </option>)}
-          </select>
         </section>}
         {!tripId && !publicMode && note && owns(note)
           && <section className="fn-side-section fn-collaborators" aria-labelledby="collaborators-heading">
@@ -855,11 +964,15 @@ function App() {
             </button>
           </fieldset>
         </section>}
-      </aside>
+      </aside>}
       <section ref={workspaceRef} className="trek-card fn-workspace" aria-label={t('Note detail', '笔记详情')} tabIndex={-1}>
-        {(note || editing) && <button type="button" className="trek-btn trek-btn--ghost fn-mobile-back"
+        {(note || editing) && !tripId && <button type="button" className="trek-btn trek-btn--ghost fn-mobile-back"
           onClick={() => void run(backToLibrary)}>
           <Icon name="chevron-left" />{t('Back to library', '返回图书馆')}
+        </button>}
+        {note && tripId && !editing && <button type="button" className="trek-btn trek-btn--ghost fn-icon-button fn-note-back"
+          aria-label={t('Back to notes', '返回笔记列表')} title={t('Back to notes', '返回笔记列表')} onClick={() => void run(backToLibrary)}>
+          <Icon name="chevron-left" />
         </button>}
         {!note && !editing ? <div className={`fn-content-browser fn-content-browser--${contentMotion}`}
           key={`${publicMode ? 'public' : 'private'}-${selectedFolderId || 'root'}-${offset}`}>
@@ -1002,7 +1115,7 @@ function App() {
               }
             })}>{t('Remove reference', '移除引用')}</button></>
           : <>
-            {editing && note && !createTripId ? <CollabEditor noteId={note.id} visibility={note.visibility || 'private'}
+            {editing && note && !createTripId && !tripId ? <CollabEditor noteId={note.id} visibility={note.visibility || 'private'}
               folderId={note.folder_id || null} isOwner={owns(note)} invoke={invoke} t={t}
               folders={editableFolders}
               renderEditor={(session) => <MarkdownEditor key={session.doc.clientID} value={session.content.toString()}
@@ -1018,6 +1131,11 @@ function App() {
               }, { silent: true })} />
             : editing ? <form onSubmit={(event) => { event.preventDefault(); void run(save); }}>
               <fieldset disabled={busy} className="trek-stack">
+                {tripId && note && <div className="fn-trip-create-context">
+                  <strong>{t('Edit snapshot', '编辑快照')}</strong>
+                  <p className="trek-muted">{t('Changes apply only to this trip’s copy; the original in the library stays as it is.',
+                    '修改只作用于这次旅行中的副本，图书馆中的原文保持不变。')}</p>
+                </div>}
                 {createTripId && <div className="fn-trip-create-context">
                   <strong>{t('New note for this trip', '为此旅行新建笔记')}</strong><span className="trek-muted">{createTripTitle}</span>
                   <p className="trek-muted">{t('The private original stays in your library and is shared live with this trip.',
@@ -1029,8 +1147,10 @@ function App() {
                   onChange={(event) => update('title', event.target.value)} />
                 <span className="trek-label">{t('Properties', '属性')}</span>
                 <PropertyEditor properties={draft.properties} onChange={(value) => update('properties', value)} t={t} />
-                {!createTripId && <VisibilityField value={draft.visibility} onChange={(value) => update('visibility', value)} t={t} />}
-                <FolderField value={draft.folder_id} folders={editableFolders} onChange={(value) => update('folder_id', value)} t={t} />
+                {!createTripId && !tripId
+                  && <VisibilityField value={draft.visibility} onChange={(value) => update('visibility', value)} t={t} />}
+                {!tripId && <FolderField value={draft.folder_id} folders={editableFolders} onChange={(value) => update('folder_id', value)}
+                  t={t} />}
                 <label id="content-label" className="trek-label" htmlFor="content-editor">Markdown</label>
                 <MarkdownEditor value={draft.content} imageSources={imageSources} references={referenceLinks}
                   onChange={(value) => update('content', value)} onReference={(id) => void run(() => openReference(id))}
@@ -1039,7 +1159,7 @@ function App() {
                   value={draft.content} onChange={(event) => update('content', event.target.value)} />
                 <div className="trek-cluster">
                   <button className="trek-btn trek-btn--primary">
-                    {createTripId ? t('Save and add to trip', '保存并添加到旅行') : t('Save note', '保存笔记')}
+                    {createTripId ? t('Save and add to trip', '保存并添加到旅行') : tripId ? t('Save snapshot', '保存快照') : t('Save note', '保存笔记')}
                   </button>
                   <button type="button" className="trek-btn trek-btn--ghost" onClick={() => void run(cancelEditing)}>
                     {t('Cancel', '取消')}
@@ -1078,35 +1198,27 @@ function App() {
                 ? <PropertyList properties={note.properties} updatedAt={note.updated_at} locale={context?.locale} t={t}
                   onOpenUrl={(url) => openHref(url, openReference)} />
                 : null}
-              <Markdown content={note.content} imageSources={imageSources} references={referenceLinks} onReference={openReference} />
-              <hr />
-              {tripId && <>
-                <h3>{t('Copy an excerpt to the day plan', '复制摘录到原生日程')}</h3>
-                <fieldset disabled={busy} className="trek-stack fn-action-form">
-                  <label className="trek-label" htmlFor="day">{t('Day', '日程')}</label>
-                  <DaySelect days={days} value={dayId} setValue={setDayId} emptyLabel={t('Choose a day', '选择日程')} />
-                  <label className="trek-label" htmlFor="excerpt">{t('Excerpt (up to 500 characters)', '摘录（最多 500 字符）')}</label>
-                  <textarea id="excerpt" className="trek-textarea" maxLength={500} value={excerpt}
-                    onChange={(event) => setExcerpt(event.target.value)} />
-                  <p className="trek-muted">
-                    {excerpt.length}/500 · {t('Creates a separate day note. Never changes the original.', '创建一条独立日程笔记，不修改原文。')}
-                  </p>
-                  <button className="trek-btn trek-btn--primary" disabled={!dayId || !excerpt.trim()} onClick={() => void run(async () => {
-                    if (!await trek.confirm({ message: t('Create a new day note with this excerpt?', '将这段摘录创建为新的日程笔记？') })) return;
-                    await post('/trip', { action: 'excerpt', trip_id: tripId, note_id: note.id, day_id: dayId, text: excerpt });
-                    setStatus(t('Copied to the day plan.', '已复制到日程。'));
-                  })}>{t('Copy excerpt', '复制摘录')}</button>
-                  <button className="trek-btn trek-btn--danger" onClick={() => void run(async () => {
-                    if (!await trek.confirm({
-                      message: t('Remove from this trip? The original stays in the library.', '从旅行中移除？图书馆中的原文会保留。'), danger: true
-                    })) return;
-                    await post('/trip', { action: 'unlink', trip_id: tripId, note_id: note.id }); setNote(null); await load();
-                  })}>{t('Remove from trip', '从旅行移除')}</button>
-                </fieldset>
-              </>}
+              {tripId ? <div className="fn-annotated">
+                <Markdown content={note.content} imageSources={imageSources} references={referenceLinks} onReference={openReference}
+                  articleRef={noteArticle} onRendered={() => setRenderedAt(Date.now())}
+                  onPoint={(x, y) => {
+                    const thread = threadAt(quoteRanges.current, x, y);
+                    if (thread) { setActiveThread(thread); setPendingQuote(null); setCommentsOpen(true); }
+                  }} />
+                <QuoteButton article={noteArticle} label={t('Comment', '评论')} onQuote={quote} />
+              </div>
+                : <Markdown content={note.content} imageSources={imageSources} references={referenceLinks} onReference={openReference} />}
             </>}
           </>}
       </section>
+      {tripId && note && !note.unavailable && !editing && <CommentPanel open={commentsOpen} threads={threads} located={locatedThreads}
+        pending={pendingQuote} activeId={activeThread} userId={Number(context?.userId)} canModerate={canEditTrip} busy={busy}
+        locale={context?.locale} actions={commentActions} t={t}
+        onActivate={(threadId) => {
+          setActiveThread(threadId);
+          quoteRanges.current.get(threadId)?.startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }}
+        onDropQuote={() => setPendingQuote(null)} onClose={() => { setCommentsOpen(false); setActiveThread(null); }} />}
     </div>
     {permissionFolder && <div className="fn-modal-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) void closeFolderPermissions();
@@ -1115,8 +1227,9 @@ function App() {
         aria-labelledby="folder-permission-title">
         <header className="fn-modal-header">
           <div>
-            <h2 id="folder-permission-title">{t('Folder permissions', '文件夹权限')}</h2>
-            <p className="fn-modal-folder-name trek-muted">{permissionFolder.name}</p>
+            <h2 id="folder-permission-title" className="fn-folder-title">
+              <span className="fn-eyebrow trek-muted">{t('Folder permissions', '文件夹权限')}</span><span>{permissionFolder.name}</span>
+            </h2>
           </div>
           <button type="button" className="fn-modal-close" aria-label={t('Close', '关闭')} title={t('Close', '关闭')}
             onClick={() => void closeFolderPermissions()}><Icon name="close" /></button>
@@ -1136,43 +1249,6 @@ function App() {
   </main>;
 }
 
-type IconName = 'folder' | 'folder-plus' | 'folder-drop' | 'note' | 'library' | 'plus' | 'refresh' | 'search' | 'sort' | 'check'
-  | 'trash' | 'edit' | 'settings' | 'more' | 'close' | 'chevron-left' | 'chevron-right';
-function Icon({ name }: { name: IconName }) {
-  const paths = {
-    folder: <><path d="M3.5 6.5h5l1.7 2h10.3v9.8a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7z" />
-      <path d="M3.5 6.5V5.7A1.7 1.7 0 0 1 5.2 4h4l1.5 2h6.1" /></>,
-    'folder-plus': <><path d="M3.5 6.5h5l1.7 2h10.3v9.8a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7z" />
-      <path d="M3.5 6.5V5.7A1.7 1.7 0 0 1 5.2 4h4l1.5 2h6.1M16 12v5M13.5 14.5h5" /></>,
-    'folder-drop': <><path d="M3.5 9.5V5.7A1.7 1.7 0 0 1 5.2 4h4l1.5 2h7.6a1.7 1.7 0 0 1 1.7 1.7v1.8" />
-      <path d="M2.8 10h18.4l-1.7 8.4a1.7 1.7 0 0 1-1.7 1.4H6.2a1.7 1.7 0 0 1-1.7-1.4z" />
-      <g className="fn-drop-arrow"><path d="M12 11.8v5M9.9 14.8l2.1 2.1 2.1-2.1" /></g></>,
-    note: <><path d="M7 3.5h7l4 4v13H7z" /><path d="M14 3.5v4h4M9.5 12h6M9.5 15.5h6" /></>,
-    library: <><path d="M4 5.5h16v13H4z" /><path d="M7 8.5h10M7 11.5h10M7 14.5h6" /></>,
-    plus: <><path d="M12 5v14M5 12h14" /></>,
-    refresh: <><path d="M19 8a7 7 0 1 0 1 6" /><path d="M19 4v4h-4" /></>,
-    sort: <><path d="M7.5 5v14M4.5 16l3 3 3-3M16.5 19V5M13.5 8l3-3 3 3" /></>,
-    check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
-    search: <><circle cx="10.8" cy="10.8" r="6.3" /><path d="m16 16 4 4" /></>,
-    trash: <><path d="M5 7h14M10 4h4l1 3H9zM7 7l.8 13h8.4L17 7M10 10v6M14 10v6" /></>,
-    edit: <><path d="m4 16.5-.8 4.3 4.3-.8L19 8.5a2.1 2.1 0 0 0-3-3z" /><path d="m14.5 7 2.5 2.5" /></>,
-    settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.8 1.8-.1-.1a1.7 1.7 0 0 0-1.9-.3
-      1.7 1.7 0 0 0-1 1.5v.1h-2.6v-.1a1.7 1.7 0 0 0-1-1.5
-      1.7 1.7 0 0 0-1.9.3l-.1.1-1.8-1.8.1-.1A1.7 1.7 0 0 0 8 15a1.7 1.7 0 0 0-1.5-1H6v-2.6h.1A1.7 1.7 0 0 0 8 10a1.7 1.7 0 0 0-.3-1.9l-.1-.1
-      1.8-1.8.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5V5h2.6v.1a1.7 1.7 0 0 0 1 1.5
-      1.7 1.7 0 0 0 1.9-.3l.1-.1 1.8 1.8-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.1V14h-.1a1.7 1.7 0 0 0-1.5 1Z" /></>,
-    more: <>
-      <circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
-      <circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" />
-    </>,
-    close: <><path d="m6 6 12 12M18 6 6 18" /></>,
-    'chevron-left': <path d="m15 5-7 7 7 7" />,
-    'chevron-right': <path d="m9 5 7 7-7 7" />,
-  };
-  return <svg className="fn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"
-    strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
-}
 
 // Icon and visibility of one owned folder, shared by the side panel and the permissions dialog.
 function FolderSettings({ folder, idPrefix, t, onIconDraft, onIcon, onVisibility }: {
@@ -1242,18 +1318,22 @@ function DaySelect({ days, value, setValue, emptyLabel }: {
   </select>;
 }
 
-function Markdown({ content, imageSources = {}, references = {}, onReference }: {
-  content: string; imageSources?: ImageSources; references?: ReferenceLinks; onReference: (id: string) => void
+// `onRendered` fires after each render into the article; `onPoint` reports clicks outside links, for quoted passages.
+function Markdown({ content, imageSources = {}, references = {}, onReference, articleRef, onRendered, onPoint }: {
+  content: string; imageSources?: ImageSources; references?: ReferenceLinks; onReference: (id: string) => void;
+  articleRef?: React.MutableRefObject<HTMLElement | null>; onRendered?: () => void; onPoint?: (x: number, y: number) => void
 }) {
-  const article = useRef<HTMLElement>(null);
+  const article = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    if (article.current) renderMarkdownInto(article.current, content, imageSources, references);
+    if (!article.current) return;
+    renderMarkdownInto(article.current, content, imageSources, references); onRendered?.();
   }, [content, imageSources, references]);
-  return <article ref={article} className="fn-markdown" onClick={(event) => {
-    const anchor = (event.target as HTMLElement).closest('a');
-    if (!anchor) return;
-    event.preventDefault(); openHref(anchor.getAttribute('href') || '', onReference);
-  }} />;
+  return <article ref={(node) => { article.current = node; if (articleRef) articleRef.current = node; }} className="fn-markdown"
+    onClick={(event) => {
+      const anchor = (event.target as HTMLElement).closest('a');
+      if (!anchor) { if (!document.getSelection()?.toString()) onPoint?.(event.clientX, event.clientY); return; }
+      event.preventDefault(); openHref(anchor.getAttribute('href') || '', onReference);
+    }} />;
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

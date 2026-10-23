@@ -159,8 +159,9 @@ body.trek-ui,
   font: inherit; cursor: pointer; transition: border-color 150ms ease, background-color 150ms ease, transform 150ms ease; }
 .fn-subfolder-row > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fn-subfolder-row:hover { border-color: var(--accent); background: var(--bg-hover); }
-.fn-subfolder-menu-button { top: 7px; inset-inline-end: 6px; }
-.fn-subfolder-menu { top: 46px; }
+/* The child combinator outranks the shared .fn-folder-menu-button / .fn-folder-menu rules declared further down. */
+.fn-subfolder-wrap > .fn-subfolder-menu-button { top: 50%; inset-inline-end: 6px; translate: 0 -50%; }
+.fn-subfolder-wrap > .fn-subfolder-menu { top: calc(100% + 4px); }
 .fn-subfolder-row:active { transform: scale(.985); }
 .fn-note-list { list-style: none; margin: 14px 0; padding: 0; display: grid; gap: 5px; }
 .fn-pagination { justify-content: flex-end; margin-top: 18px; }
@@ -227,7 +228,11 @@ body.trek-ui,
   .fn-subfolder-wrap.is-landed > .fn-subfolder-row { animation: fn-landed 650ms cubic-bezier(.23, 1, .32, 1); }
 .is-landed .fn-folder-icon, .fn-library-row.is-landed .fn-icon { animation: fn-landed-icon 420ms cubic-bezier(.34, 1.56, .64, 1); }
 .fn-folder-access { margin: 0 0 16px; }
-.fn-folder-access .fn-detail-header { display: grid; justify-content: stretch; gap: 3px; }
+.fn-folder-access .fn-detail-header { display: grid; justify-content: stretch; gap: 3px; margin-bottom: 14px; }
+.fn-folder-title { display: grid; gap: 4px; min-width: 0; }
+.fn-folder-title > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.fn-folder-title > span.fn-eyebrow:first-child { font-size: 12px; font-weight: 500; line-height: 1.3; }
+.fn-folder-access .fn-folder-title > span:last-child { font-size: 18px; line-height: 1.25; }
 .fn-folder-settings { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 12px; align-items: start; }
 .fn-folder-settings .trek-label { margin: 0; }
 .fn-folder-settings .fn-setting-field:first-child .fn-emoji-input { width: 46px; padding-inline: 0; }
@@ -258,6 +263,7 @@ body.trek-ui,
 .fn-person-option { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; min-height: 34px; padding: 3px 6px;
   border-radius: 6px; color: var(--text-primary); font-size: 13px; line-height: 1.25; cursor: pointer; }
 .fn-person-option:hover { background: var(--bg-hover); }
+.fn-person-hint { font-size: 11px; line-height: 1.4; }
 .fn-person-option input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
 .fn-person-role-select { width: 112px; min-height: 34px; padding-block: 5px; font-size: 12px; }
 .fn-person-empty { padding: 7px; font-size: 12px; }
@@ -279,7 +285,6 @@ body.trek-ui,
   animation: fn-modal-in 220ms cubic-bezier(.23, 1, .32, 1); }
 .fn-modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 17px; }
 .fn-modal-header h2 { margin: 0; font-size: 21px; line-height: 1.2; }
-.fn-modal-folder-name { margin: 7px 0 0; font-size: 13px; }
 .fn-modal-close { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 auto; padding: 0; border: 0;
   border-radius: 9px; color: var(--text-secondary); background: transparent; cursor: pointer; }
 .fn-modal-close:hover { color: var(--text-primary); background: var(--bg-hover); }
@@ -320,6 +325,91 @@ body.trek-ui,
 .fn-tooltip:hover::after, .fn-tooltip:focus-visible::after { opacity: 1; transform: translateY(0); }
 .fn-note-actions { display: flex; flex: 0 0 auto; gap: 6px; }
 .fn-mobile-back { display: none; }
+/* Trip note pages give the note the full width. The comment panel opens in the space to its right; the note keeps its
+   place and narrows only by what that space lacks: 320px panel + 14px gap + 16px edge = 350px. */
+.fn-layout.fn-layout-note { position: relative; grid-template-columns: minmax(0, 1fr); }
+.fn-layout-comments > .fn-workspace { width: min(100%, calc((100vw + 100%) / 2 - 350px)); }
+.fn-layout-note .fn-note-back { display: inline-grid; width: 40px; min-width: 40px; height: 40px; margin: -6px 0 8px -10px;
+  border-radius: 50%; }
+.fn-layout-note .fn-note-back .fn-icon { width: 24px; height: 24px; }
+.fn-comment-toggle { position: relative; }
+.fn-badge { position: absolute; top: -5px; inset-inline-end: -5px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  color: var(--accent-text); background: var(--accent); font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; }
+.fn-danger-icon:hover, .fn-danger-icon:focus-visible { border-color: color-mix(in oklch, var(--danger) 40%, var(--border-primary));
+  color: var(--danger); }
+.fn-annotated { position: relative; }
+::highlight(fn-comment) { background-color: color-mix(in oklch, var(--warning) 22%, transparent); }
+::highlight(fn-comment-active) { background-color: color-mix(in oklch, var(--warning) 45%, transparent); }
+.fn-quote-button { position: absolute; z-index: 6; min-height: 32px; padding: 4px 12px; font-size: 13px; box-shadow: var(--shadow-md); }
+.fn-comment-panel { order: 3; position: absolute; top: 0; left: calc(min(100%, (100vw + 100%) / 2 - 350px) + 14px); display: grid;
+  gap: 12px; align-content: start; box-sizing: border-box; width: 320px; padding: 16px; border: 1px solid var(--border-primary);
+  border-radius: 16px; background: var(--bg-card);
+  /* Slides in from the right and leaves the same way; transitions retarget mid-way when toggled quickly. */
+  transition: opacity 200ms cubic-bezier(.23, 1, .32, 1), transform 200ms cubic-bezier(.23, 1, .32, 1), visibility 0s linear 200ms; }
+.fn-comment-panel:not([data-open]) { opacity: 0; transform: translateX(12px); visibility: hidden; pointer-events: none; }
+.fn-comment-panel[data-open] { transition-delay: 0s; }
+@media (prefers-reduced-motion: reduce) { .fn-comment-panel:not([data-open]) { transform: none; } }
+@media (max-width: 860px) {
+  .fn-layout-comments > .fn-workspace { width: auto; }
+  .fn-comment-panel { position: static; width: auto; }
+  .fn-comment-panel:not([data-open]) { display: none; }
+}
+.fn-comment-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fn-comment-panel-header h3 { margin: 0; font-size: 15px; }
+.fn-comment-panel-header .fn-icon-button { width: 32px; min-width: 32px; height: 32px; font-size: 18px; }
+.fn-comment-tabs { justify-self: start; }
+.fn-comment-tabs > button { padding: 6px 12px; font-size: 12px; }
+.fn-comment-new, .fn-comment-composer { display: grid; gap: 8px; }
+.fn-comment-composer .trek-textarea { min-height: 64px; }
+.fn-comment-composer-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.fn-comment-quote { display: grid; gap: 4px; margin: 0; padding: 2px 0 2px 10px;
+  border-inline-start: 3px solid color-mix(in oklch, var(--warning) 60%, var(--border-primary)); color: var(--text-secondary);
+  font-size: 12px; line-height: 1.5; }
+.fn-comment-quote > span { display: -webkit-box; overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3; }
+.fn-comment-quote > .fn-text-button { justify-self: start; }
+.fn-comment-threads, .fn-comment-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.fn-comment-thread { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border-primary); border-radius: 12px;
+  background: var(--bg-secondary); cursor: pointer; transition: border-color 150ms ease; }
+.fn-comment-thread:hover { border-color: color-mix(in oklch, var(--accent) 30%, var(--border-primary)); }
+.fn-comment-thread.is-active { border-color: color-mix(in oklch, var(--warning) 65%, var(--border-primary)); }
+.fn-comment-thread.is-resolved .fn-comment-list { opacity: .78; }
+.fn-comment-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; font-size: 12px; }
+.fn-avatar { display: inline-grid; flex: 0 0 auto; place-items: center; overflow: hidden; box-sizing: border-box; width: 26px; height: 26px;
+  border-radius: 50%; color: #fff; background: var(--peer); font-size: 12px; font-weight: 700; line-height: 1; }
+.fn-comment-avatar { width: 22px; height: 22px; font-size: 11px; }
+.fn-comment-body { margin: 4px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 13px; line-height: 1.55; }
+.fn-comment-thread-head { display: flex; align-items: flex-start; gap: 8px; }
+.fn-comment-thread-head > :first-child { flex: 1; min-width: 0; }
+.fn-comment-scope { padding-top: 5px; font-size: 12px; }
+.fn-comment-tool { display: inline-grid; flex: 0 0 auto; place-items: center; width: 28px; height: 28px; padding: 0;
+  border: 1px solid transparent; border-radius: 8px; color: var(--text-secondary); background: transparent; cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
+.fn-comment-tool .fn-icon { width: 15px; height: 15px; }
+.fn-comment-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fn-comment-tool:disabled { opacity: .5; cursor: default; }
+@media (hover: hover) and (pointer: fine) {
+  .fn-comment-tool:hover { border-color: var(--border-primary); color: var(--text-primary); background: var(--bg-hover); }
+  .fn-comment-tool.is-danger:hover { color: var(--danger); }
+}
+.fn-comment-resolve { border-color: var(--border-primary); border-radius: 50%; }
+/* Per-comment tools stay out of the way until the pointer or focus reaches that comment; touch screens always show them. */
+.fn-comment { position: relative; }
+.fn-comment-tools { position: absolute; top: -4px; inset-inline-end: -4px; display: inline-flex; gap: 2px; padding: 2px;
+  border: 1px solid var(--border-primary); border-radius: 10px; background: var(--bg-card); box-shadow: var(--shadow-sm); opacity: 0;
+  transition: opacity 150ms ease; }
+.fn-comment:hover .fn-comment-tools, .fn-comment:focus-within .fn-comment-tools { opacity: 1; }
+@media (hover: none) { .fn-comment-tools { opacity: 1; } }
+.fn-comment-reply-field { box-sizing: border-box; width: 100%; min-height: 34px; padding: 7px 10px; border: 1px solid var(--border-primary);
+  border-radius: 9px; color: var(--text-muted); background: var(--bg-input); font: inherit; font-size: 13px; text-align: start;
+  cursor: text; transition: border-color 150ms ease; }
+.fn-comment-reply-field:hover { border-color: color-mix(in oklch, var(--accent) 30%, var(--border-primary)); }
+.fn-text-button { padding: 0; border: 0; color: var(--text-secondary); background: none; font: inherit; font-size: 12px; cursor: pointer; }
+.fn-text-button:hover, .fn-text-button:focus-visible { color: var(--text-primary); text-decoration: underline; }
+.fn-text-button:disabled { opacity: .5; cursor: default; }
+.fn-comment-empty { display: grid; gap: 2px; margin: 0; font-size: 13px; line-height: 1.5; }
+/* Wrapped text never ends on a lone word or character, in any language. */
+.fn-shell :is(p, small, li, blockquote, label, .trek-muted) { text-wrap: pretty; }
 .fn-note-mode { border-color: color-mix(in oklch, var(--accent) 35%, var(--border-primary)); color: var(--accent); font-weight: 600; }
 .fn-note-actions .fn-icon-button { width: 36px; min-width: 36px; height: 36px; }
 .fn-note-row { width: 100%; display: flex; align-items: center; gap: 11px; padding: 11px 12px; text-align: start; cursor: pointer;
@@ -510,8 +600,7 @@ body.trek-ui,
   border: 1px solid var(--border-primary); border-radius: 10px; background: var(--bg-secondary); }
 .fn-collab-people { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
 .fn-collab-avatars { display: inline-flex; }
-.fn-collab-avatar { display: inline-grid; place-items: center; width: 26px; height: 26px; border: 2px solid var(--bg-secondary);
-  border-radius: 50%; color: #fff; background: var(--peer); font-size: 12px; font-weight: 700;
+.fn-collab-avatar { border: 2px solid var(--bg-secondary);
   animation: fn-avatar-in 220ms cubic-bezier(.34, 1.56, .64, 1); }
 .fn-collab-avatar + .fn-collab-avatar { margin-inline-start: -8px; }
 .fn-collab-status { color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -641,4 +730,7 @@ button:disabled { cursor: not-allowed; }
   .fn-collaborator-list .trek-select { width: 100%; min-width: 0; }
   .fn-collaborator-bulk-actions { align-items: stretch; flex-direction: column; gap: 8px; }
   .fn-collaborator-bulk-actions .trek-btn { width: 100%; }
+  .fn-comment-panel { border-radius: 14px; }
+  .fn-shell .fn-text-button { min-height: 32px; }
+  .fn-shell .fn-comment-tool { width: 36px; min-height: 36px; height: 36px; }
 }

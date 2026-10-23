@@ -7,8 +7,8 @@ module.exports = definePlugin({
     method: 'POST', path: '/trip', auth: true,
     async handler(req, ctx) {
       if (!req.user) return { status: 401, body: JSON.stringify({ error: 'Sign in first.' }) };
-      const body = req.body?.action === 'begin_note' ? { ...req.body, actor_id: req.user.id } : req.body;
-      return ctx.plugins.call('fieldnotes', 'trip', body);
+      // Fieldnotes records who wrote, edited or created something from this stamp, never from the page's own fields.
+      return ctx.plugins.call('fieldnotes', 'trip', { ...req.body, actor_id: req.user.id });
     },
   }],
 });

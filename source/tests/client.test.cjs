@@ -348,16 +348,93 @@ test('canceling sharing never writes a link', async (t) => {
   assert.equal(app.calls.filter((call) => call.sub === '/link').length, 0);
 });
 
-test('trip UI reads from dependency endpoint and copies only the chosen excerpt', async (t) => {
-  const app = await ui(t, { trip: true, note: { content: 'x'.repeat(600) } });
-  app.doc.querySelector('.fn-note-row').click(); await until(() => app.doc.querySelector('#excerpt'));
-  assert.equal(app.doc.querySelector('.fn-note-mode').textContent, 'Live reference');
-  assert.equal(app.doc.querySelector('#excerpt').value, 'Japan tips');
-  app.select('#day', '101'); app.input('#excerpt', 'Buy the IC card first.');
-  await until(() => ![...app.doc.querySelectorAll('button')].find((button) => button.textContent === 'Copy excerpt').disabled);
-  app.click('Copy excerpt'); await until(() => app.calls.some((call) => call.body?.action === 'excerpt'));
-  assert.equal(app.calls.find((call) => call.body?.action === 'excerpt').body.text, 'Buy the IC card first.');
-  assert.equal(app.calls.some((call) => call.sub.startsWith('/notes')), false);
+// A trip page whose /trip route keeps one note's discussion in memory, like the server's comment actions.
+async function tripUi(t, fields = {}) {
+  let comments = []; let seq = 0;
+  let note = { id: '11111111-1111-1111-1111-111111111111', title: 'Japan tips', content: 'Buy an IC card. Keep a spare IC card.',
+    owner_id: 1, version: 1, updated_at: '2026-09-21', mode: 'live', can_snapshot: true, ...fields };
+  const app = await ui(t, { trip: true, note,
+    invoke: (sub, init) => {
+      const body = init?.body || {};
+      if (sub !== '/trip') return undefined;
+      if (body.action === 'list') return { trip: { id: 10, title: 'Japan trip' }, notes: [note] };
+      if (body.action === 'comments') return comments;
+      if (body.action === 'comment_add') {
+        seq += 1;
+        comments = [...comments, { id: `00000000-0000-4000-8000-00000000000${seq}`, parent_id: body.parent_id || null, author_id: 1,
+          author: { id: 1, display_name: 'Tangerine', color: '#ec4899' },
+          body: body.body, quote: body.quote || null, prefix: body.prefix || null,
+          suffix: body.suffix || null, created_at: '2026-10-23T08:00:00Z', updated_at: '2026-10-23T08:00:00Z', resolved_at: null,
+          resolved_by: null }];
+        return comments;
+      }
+      if (body.action === 'snapshot_save') note = { ...note, title: body.title, content: body.content, version: note.version + 1 };
+      if (body.action === 'snapshot_convert') note = { ...note, mode: 'snapshot' };
+      if (['snapshot_save', 'snapshot_convert'].includes(body.action)) return note;
+      return undefined;
+    } });
+  app.doc.querySelector('.fn-note-row').click();
+  await until(() => app.doc.querySelector('.fn-markdown')?.textContent.includes('IC card'));
+  return app;
+}
+const button = (app, label) => app.doc.querySelector(`[aria-label="${label}"]`);
+
+test('a trip note fills the page and swaps folder actions for note actions', async (t) => {
+  const app = await tripUi(t);
+  assert.equal(app.doc.querySelector('.fn-library'), null);
+  assert.equal(app.doc.querySelector('.fn-trip-folder-placement'), null);
+  for (const label of ['Refresh', 'New note for this trip', 'Open library']) assert.equal(button(app, label), null, label);
+  for (const label of ['Comments', 'Convert to snapshot', 'Remove from trip']) assert.ok(button(app, label), label);
+  assert.equal(button(app, 'Edit snapshot'), null);
+  assert.equal(app.doc.body.textContent.includes('Copy excerpt'), false);
+  assert.equal(button(app, 'Back to notes').textContent, '');
+  button(app, 'Back to notes').click(); await until(() => app.doc.querySelector('.fn-library'));
+  assert.ok(button(app, 'Refresh'));
+});
+
+test('a live reference becomes a snapshot only after confirmation', async (t) => {
+  const app = await tripUi(t);
+  button(app, 'Convert to snapshot').click();
+  await until(() => app.calls.some((call) => call.body?.action === 'snapshot_convert'));
+  assert.match(app.confirmations.at(-1).message, /keeps its own copy/);
+  await until(() => button(app, 'Edit snapshot'));
+  assert.equal(button(app, 'Convert to snapshot'), null);
+});
+
+test('trip editors edit a snapshot in place without library-only fields', async (t) => {
+  const app = await tripUi(t, { mode: 'snapshot', version: 7 });
+  assert.equal(button(app, 'Convert to snapshot'), null);
+  button(app, 'Edit snapshot').click(); await until(() => app.doc.querySelector('#title'));
+  assert.equal(app.doc.querySelector('#visibility'), null);
+  assert.equal(app.doc.body.textContent.includes('Changes apply only to this trip’s copy'), true);
+  app.input('#title', 'IC cards for this trip'); app.click('Save snapshot');
+  await until(() => app.calls.some((call) => call.body?.action === 'snapshot_save'));
+  const request = app.calls.find((call) => call.body?.action === 'snapshot_save').body;
+  assert.equal(request.version, 7); assert.equal(request.title, 'IC cards for this trip'); assert.equal(request.folder_id, undefined);
+  await until(() => app.doc.querySelector('.fn-detail-header h2')?.textContent === 'IC cards for this trip');
+});
+
+test('comments open in a side panel, for the whole note or a selected passage', async (t) => {
+  const app = await tripUi(t);
+  button(app, 'Comments').click(); await until(() => app.doc.querySelector('.fn-comment-panel'));
+  assert.match(app.doc.querySelector('.fn-comment-empty').textContent, /Select text/);
+  app.input('.fn-comment-new textarea', 'Worth it for the airport train.'); app.click('Comment');
+  await until(() => app.doc.querySelectorAll('.fn-comment-thread').length === 1);
+  assert.equal(app.calls.find((call) => call.body?.action === 'comment_add').body.quote, undefined);
+  // Selecting the second "IC card" quotes it with enough context to tell it from the first.
+  const text = app.doc.querySelector('.fn-markdown p').firstChild; const at = text.data.lastIndexOf('IC card');
+  const range = app.doc.createRange(); range.setStart(text, at); range.setEnd(text, at + 'IC card'.length);
+  app.window.getSelection().removeAllRanges(); app.window.getSelection().addRange(range);
+  app.doc.dispatchEvent(new app.window.Event('selectionchange'));
+  await until(() => app.doc.querySelector('.fn-quote-button')); app.doc.querySelector('.fn-quote-button').click();
+  await until(() => app.doc.querySelector('.fn-comment-new .fn-comment-quote'));
+  app.input('.fn-comment-new textarea', 'Get the Suica one.'); app.click('Comment');
+  await until(() => app.doc.querySelectorAll('.fn-comment-thread').length === 2);
+  const quoted = app.calls.filter((call) => call.body?.action === 'comment_add')[1].body;
+  assert.equal(quoted.quote, 'IC card'); assert.equal(quoted.prefix, 'Buy an IC card. Keep a spare '); assert.match(quoted.suffix, /^\./);
+  assert.equal(button(app, 'Comments').querySelector('.fn-badge').textContent, '2');
+  const avatar = app.doc.querySelector('.fn-comment-avatar');
+  assert.equal(avatar.textContent, 'T'); assert.equal(avatar.style.getPropertyValue('--peer'), '#ec4899');
 });
 
 async function openEditor(app) {

@@ -19,7 +19,8 @@ module.exports = definePlugin({
     handler: (req, ctx) => respond(() => handle(action, req, ctx)),
   })),
   exports: {
-    // Only trip-scoped operations are exposed. No caller-supplied user identity is trusted.
+    // Only trip-scoped operations are exposed. The companion stamps `actor_id` from its signed-in request; it is accepted only
+    // for a member of the trip the acting user can open, and links stay tied to the authenticated Fieldnotes route.
     trip: (args, ctx) => respond(() => tripAction(args, ctx)),
   },
   hooks: {

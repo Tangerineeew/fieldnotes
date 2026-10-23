@@ -3,5 +3,8 @@
   "maxImageBytes": 4194304,
   "maxContentChars": 24000,
   "maxContentBytes": 40000,
-  "maxPropertiesBytes": 32000
+  "maxPropertiesBytes": 32000,
+  "maxCommentChars": 2000,
+  "maxQuoteChars": 500,
+  "quoteContextChars": 32
 }

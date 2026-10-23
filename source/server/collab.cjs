@@ -11,6 +11,8 @@ const ACCESS_TTL_MS = 10000;
 const COMPACT_AFTER = 100;
 const ROOTS = new Set(['title', 'content', 'properties', 'meta']);
 const COLORS = ['#8b5cf6', '#ec4899', '#10b981', '#f59e0b', '#f97316', '#3b82f6', '#14b8a6', '#ef4444'];
+// Each person keeps one colour everywhere they appear: co-editing cursors, avatars and comment authors.
+const personColor = (userId) => COLORS[userId % COLORS.length];
 const b64 = (bytes) => Buffer.from(bytes).toString('base64');
 const bytes = (text) => new Uint8Array(Buffer.from(text, 'base64'));
 const whenValid = (check) => {
@@ -45,7 +47,7 @@ function createCollab({ fail, id, editable, noteFields, propertyFields, noteIcon
       const user = await ctx.users.getById(userId).catch(() => null);
       nameCache.set(userId, user?.display_name || user?.username || `#${userId}`);
     }
-    return { name: nameCache.get(userId), color: COLORS[userId % COLORS.length] };
+    return { name: nameCache.get(userId), color: personColor(userId) };
   }
 
   function seed(note) {
@@ -221,4 +223,4 @@ function replace(text, value) {
   text.insert(start, value.slice(start, value.length - end));
 }
 
-module.exports = { createCollab };
+module.exports = { createCollab, personColor };

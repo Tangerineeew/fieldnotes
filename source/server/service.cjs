@@ -4,9 +4,11 @@ const { randomUUID } = require('node:crypto');
 const dns = require('node:dns/promises');
 const https = require('node:https');
 const { isIP } = require('node:net');
-const { maxImageBytes, maxContentChars, maxContentBytes, maxPropertiesBytes } = require('../shared/limits.json');
+const {
+  maxImageBytes, maxContentChars, maxContentBytes, maxPropertiesBytes, maxCommentChars, maxQuoteChars, quoteContextChars
+} = require('../shared/limits.json');
 const { createAssets } = require('./assets.cjs');
-const { createCollab } = require('./collab.cjs');
+const { createCollab, personColor } = require('./collab.cjs');
 
 // `message` is an English template; `{name}` placeholders are filled from `params` here and again, translated, by the client.
 class Problem extends Error {
@@ -156,6 +158,7 @@ const noteSorts = { name: (a, b, collator) => collator.compare(a.title, b.title)
 const hostNotAllowed = 'Image host is not allowed. Paste the image itself, or ask an admin to allow this host.';
 const maxSnapshotAssetsBytes = 32 * 1024 * 1024;
 const maxSnapshotAssets = 100 - 2; // SDK transaction cap minus link and snapshot rows.
+const maxCommentsPerNote = 500;
 const allowedImageTypes = new Set(['image/avif', 'image/gif', 'image/jpeg', 'image/png', 'image/webp']);
 
 function imageSources(content) {
@@ -386,6 +389,12 @@ async function initialize(ctx) {
     id TEXT NOT NULL, owner_id INTEGER NOT NULL, part INTEGER NOT NULL, parts INTEGER NOT NULL,
     data TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (id, part)
   ); CREATE INDEX asset_uploads_created ON asset_uploads(created_at);`);
+  await ctx.db.migrate('014_trip_note_comments', `CREATE TABLE trip_note_comments (
+    id TEXT PRIMARY KEY, trip_id INTEGER NOT NULL, note_id TEXT NOT NULL, parent_id TEXT, author_id INTEGER NOT NULL,
+    body TEXT NOT NULL, quote TEXT, prefix TEXT, suffix TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    resolved_at TEXT, resolved_by INTEGER
+  ); CREATE INDEX trip_note_comments_note ON trip_note_comments(trip_id, note_id, created_at);
+  CREATE INDEX trip_note_comments_author ON trip_note_comments(author_id);`);
 }
 
 const roleValue = (role) => {
@@ -592,7 +601,8 @@ async function tripFolderAction(input, ctx) {
   fail(400, 'Unknown trip folder action.');
 }
 
-async function tripNotes(ctx, tripId, folderId = null) {
+// With `actorId`, live references also say whether that person may freeze them into a snapshot.
+async function tripNotes(ctx, tripId, folderId = null, actorId = null) {
   const trip = await checkTrip(ctx, tripId);
   const links = await ctx.db.query(
     'SELECT note_id, source_owner_id, mode, day_id, linked_at FROM trip_note_links WHERE trip_id = ? ORDER BY linked_at, note_id',
@@ -609,7 +619,9 @@ async function tripNotes(ctx, tripId, folderId = null) {
     ctx.db.query('SELECT * FROM notes WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(ids)),
     ctx.db.query('SELECT * FROM trip_note_snapshots WHERE trip_id = ?', trip.id),
   ]);
-  const notesById = new Map(rows.map((row) => [row.id, decode(row)]));
+  const access = actorId ? await listAccessData(ctx, actorId) : null;
+  const canSnapshot = (row) => Boolean(access && noteAccessFromRows(actorId, row, access).canRead);
+  const notesById = new Map(rows.map((row) => [row.id, { ...decode(row), can_snapshot: canSnapshot(row) }]));
   const snapshotsById = new Map(snapshots.map((row) => [row.note_id, decode(row)]));
   const notes = visibleLinks.map((link) => {
     const noteId = link.note_id;
@@ -845,10 +857,10 @@ async function asset(ctx, userId, input) {
   fail(400, 'Unsupported image source.');
 }
 
-async function captureSnapshotAssets(ctx, note) {
-  const sources = imageSources(note.content);
+// `keptBytes` counts the copies a snapshot already holds, so an edit cannot grow it past the same cap.
+async function captureSnapshotAssets(ctx, sources, keptBytes = 0) {
   if (sources.length > maxSnapshotAssets) fail(400, 'A snapshot can include at most {count} images.', { count: maxSnapshotAssets });
-  const assets = []; let totalBytes = 0;
+  const assets = []; let totalBytes = keptBytes;
   for (const source of sources) {
     const file = tripFileSource(source);
     let image;
@@ -872,9 +884,7 @@ async function captureSnapshotAssets(ctx, note) {
 async function beginTripNote(ctx, input) {
   const trip = await checkTrip(ctx, input.trip_id);
   await requireTripEdit(ctx, trip.id);
-  const ownerId = number(input.actor_id);
-  const members = await ctx.trips.members(trip.id);
-  if (Number(trip.user_id) !== ownerId && !members.some((member) => Number(member.id) === ownerId)) fail(403, 'Trip member not found.');
+  const ownerId = await tripActor(ctx, trip, input.actor_id);
   const tripFolderId = input.trip_folder_id ? id(input.trip_folder_id) : null;
   if (tripFolderId) {
     const [folder] = await ctx.db.query('SELECT id FROM trip_folders WHERE id = ? AND trip_id = ? AND archived = 0', tripFolderId, trip.id);
@@ -946,7 +956,7 @@ async function createTripLink(ctx, userId, input) {
   const [existing] = await ctx.db.query('SELECT note_id FROM trip_note_links WHERE trip_id = ? AND note_id = ?', trip.id, note.id);
   if (existing) fail(409, 'Already linked. Remove the existing link before replacing it.');
   const linkedAt = new Date().toISOString();
-  const assets = input.mode === 'snapshot' ? await captureSnapshotAssets(ctx, note) : [];
+  const assets = input.mode === 'snapshot' ? await captureSnapshotAssets(ctx, imageSources(note.content)) : [];
   const ops = [{
     sql: `INSERT INTO trip_note_links (trip_id, note_id, source_owner_id, linked_by, mode, day_id, linked_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -978,6 +988,162 @@ async function createTripLink(ctx, userId, input) {
   return { linked: true };
 }
 
+// The companion route stamps `actor_id` from its own authenticated request, and Fieldnotes' route from its session; either
+// way the person must belong to the trip the acting user opened.
+async function tripActor(ctx, trip, actorId) {
+  const userId = Number(actorId);
+  if (!Number.isSafeInteger(userId) || userId < 1) fail(401, 'Sign in first.');
+  const members = await ctx.trips.members(trip.id);
+  if (Number(trip.user_id) !== userId && !members.some((member) => Number(member.id) === userId)) fail(403, 'Trip member not found.');
+  return userId;
+}
+
+async function tripLink(ctx, tripId, noteId) {
+  const [link] = await ctx.db.query('SELECT * FROM trip_note_links WHERE trip_id = ? AND note_id = ?', tripId, noteId);
+  return link || fail(404, 'Linked note not found.');
+}
+
+async function tripNote(ctx, tripId, noteId, actorId) {
+  const note = (await tripNotes(ctx, tripId, null, actorId)).notes.find((item) => item.id === noteId);
+  return note || fail(404, 'Linked note not found.');
+}
+
+// Edits keep a snapshot self-contained: images it gains are copied in, and copies it no longer shows are dropped.
+async function saveSnapshot(ctx, trip, input, actorId) {
+  await requireTripEdit(ctx, trip.id);
+  const noteId = id(input.note_id);
+  const [current] = await ctx.db.query('SELECT * FROM trip_note_snapshots WHERE trip_id = ? AND note_id = ?', trip.id, noteId);
+  if (!current) fail(404, 'Snapshot not found.');
+  if (input.version !== current.version) fail(409, 'This note changed. Reload before saving.');
+  const { title, content } = noteFields(input);
+  const properties = input.properties === undefined ? null : propertyFields(input.properties);
+  const icon = input.icon === undefined ? undefined : noteIcon(input.icon);
+  const sources = imageSources(content);
+  if (sources.length > maxSnapshotAssets) fail(400, 'A snapshot can include at most {count} images.', { count: maxSnapshotAssets });
+  const stored = await ctx.db.query('SELECT source, size FROM snapshot_assets WHERE trip_id = ? AND note_id = ?', trip.id, noteId);
+  const kept = stored.filter((row) => sources.includes(row.source));
+  const keptSources = new Set(kept.map((row) => row.source));
+  const added = await captureSnapshotAssets(ctx, sources.filter((source) => !keptSources.has(source)),
+    kept.reduce((total, row) => total + row.size, 0));
+  // Every write is guarded by the version read above, so a concurrent save leaves this one without effect.
+  const guard = 'EXISTS (SELECT 1 FROM trip_note_snapshots WHERE trip_id = ? AND note_id = ? AND version = ?)';
+  const guardArgs = [trip.id, noteId, current.version];
+  const now = new Date().toISOString();
+  await ctx.db.tx([
+    { sql: `DELETE FROM snapshot_assets WHERE trip_id = ? AND note_id = ? AND source NOT IN (SELECT value FROM json_each(?))
+      AND ${guard}`, args: [trip.id, noteId, JSON.stringify([...keptSources]), ...guardArgs] },
+    ...added.map((asset) => ({
+      sql: `INSERT OR REPLACE INTO snapshot_assets (trip_id, note_id, source, mimetype, size, content_base64)
+        SELECT ?, ?, ?, ?, ?, ? WHERE ${guard}`,
+      args: [trip.id, noteId, asset.source, asset.mimetype, asset.size, asset.content_base64, ...guardArgs],
+    })),
+    { sql: `UPDATE trip_note_snapshots SET title = ?, content = ?, properties = COALESCE(?, properties),
+      icon = CASE WHEN ? THEN ? ELSE icon END, version = version + 1, updated_at = ?
+      WHERE trip_id = ? AND note_id = ? AND version = ?`,
+    args: [title, content, properties, icon !== undefined ? 1 : 0, icon ?? null, now, ...guardArgs] },
+  ]);
+  const saved = await tripNote(ctx, trip.id, noteId, actorId);
+  if (saved.updated_at !== now) fail(409, 'This note changed. Reload before saving.');
+  return saved;
+}
+
+// Freezing follows the rule for importing a snapshot: only someone who can read the note in Fieldnotes may keep a copy,
+// so a live reference to someone else's private note still lapses when its author leaves.
+async function convertToSnapshot(ctx, trip, input, actorId) {
+  await requireTripEdit(ctx, trip.id);
+  const noteId = id(input.note_id);
+  const link = await tripLink(ctx, trip.id, noteId);
+  if (link.mode !== 'live') fail(409, 'This note is already a snapshot.');
+  const note = await readable(ctx, actorId, noteId).catch((error) => {
+    if (error instanceof Problem && error.status === 404)
+      fail(403, 'Only people who can read this note in Fieldnotes can turn it into a snapshot.');
+    throw error;
+  });
+  const assets = await captureSnapshotAssets(ctx, imageSources(note.content));
+  const now = new Date().toISOString();
+  await ctx.db.tx([
+    { sql: `INSERT INTO trip_note_snapshots (trip_id, note_id, title, content, tags, properties, icon, version,
+      updated_at, visibility, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [trip.id, note.id, note.title, note.content, JSON.stringify(note.tags), JSON.stringify(note.properties),
+      note.icon ?? null, note.version, note.updated_at, note.visibility, now] },
+    ...assets.map((asset) => ({
+      sql: `INSERT INTO snapshot_assets (trip_id, note_id, source, mimetype, size, content_base64) VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [trip.id, note.id, asset.source, asset.mimetype, asset.size, asset.content_base64],
+    })),
+    { sql: "UPDATE trip_note_links SET mode = 'snapshot' WHERE trip_id = ? AND note_id = ? AND mode = 'live'", args: [trip.id, note.id] },
+  ]).catch((error) => {
+    if (/UNIQUE constraint failed: trip_note_snapshots/.test(error.message)) fail(409, 'This note is already a snapshot.');
+    throw error;
+  });
+  return tripNote(ctx, trip.id, noteId, actorId);
+}
+
+const commentBody = (value) => {
+  const body = text(value, maxCommentChars, 'comment').trim();
+  return body || fail(400, 'A comment cannot be empty.');
+};
+
+// A thread may quote the passage it is about; the few characters around the quote tell repeated passages apart.
+const commentAnchor = (input) => {
+  if (input.quote === undefined || input.quote === null || input.quote === '') return [null, null, null];
+  const quote = text(input.quote, maxQuoteChars, 'quote').trim();
+  const context = (value) => text(value ?? '', quoteContextChars, 'quote context');
+  return quote ? [quote, context(input.prefix), context(input.suffix)] : [null, null, null];
+};
+
+async function tripComments(ctx, trip, noteId) {
+  const rows = await ctx.db.query(`SELECT id, parent_id, author_id, body, quote, prefix, suffix, created_at, updated_at, resolved_at,
+    resolved_by FROM trip_note_comments WHERE trip_id = ? AND note_id = ? ORDER BY created_at, rowid`, trip.id, noteId);
+  const people = new Map((await ctx.trips.members(trip.id)).map((member) => [Number(member.id), member]));
+  // Authors who left the trip keep their name on what they wrote.
+  for (const authorId of new Set(rows.map((row) => row.author_id))) {
+    if (!people.has(authorId)) people.set(authorId, await ctx.users.getById(authorId) || { id: authorId });
+  }
+  return rows.map((row) => ({ ...row, author: { ...people.get(row.author_id), color: personColor(row.author_id) } }));
+}
+
+// Every trip member may read, write and resolve threads; editing stays with the author, and removal with the author or
+// anyone who can edit the trip.
+async function commentAction(input, ctx, trip, actorId) {
+  const noteId = id(input.note_id);
+  await tripLink(ctx, trip.id, noteId);
+  if (input.action === 'comments') return tripComments(ctx, trip, noteId);
+  const now = new Date().toISOString();
+  if (input.action === 'comment_add') {
+    const body = commentBody(input.body);
+    const parentId = input.parent_id ? id(input.parent_id) : null;
+    if (parentId) {
+      const [parent] = await ctx.db.query(`SELECT id FROM trip_note_comments
+        WHERE id = ? AND trip_id = ? AND note_id = ? AND parent_id IS NULL`, parentId, trip.id, noteId);
+      if (!parent) fail(404, 'Comment not found.');
+    }
+    const [{ count }] = await ctx.db.query('SELECT COUNT(*) AS count FROM trip_note_comments WHERE trip_id = ? AND note_id = ?',
+      trip.id, noteId);
+    if (count >= maxCommentsPerNote) fail(400, 'A note can hold at most {count} comments.', { count: maxCommentsPerNote });
+    const [quote, prefix, suffix] = parentId ? [null, null, null] : commentAnchor(input);
+    await ctx.db.exec(`INSERT INTO trip_note_comments (id, trip_id, note_id, parent_id, author_id, body, quote, prefix, suffix,
+      created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    randomUUID(), trip.id, noteId, parentId, actorId, body, quote, prefix, suffix, now, now);
+    return tripComments(ctx, trip, noteId);
+  }
+  const [comment] = await ctx.db.query('SELECT * FROM trip_note_comments WHERE id = ? AND trip_id = ? AND note_id = ?',
+    id(input.comment_id), trip.id, noteId);
+  if (!comment) fail(404, 'Comment not found.');
+  if (input.action === 'comment_edit') {
+    if (comment.author_id !== actorId) fail(403, 'Only the author can edit a comment.');
+    await ctx.db.exec('UPDATE trip_note_comments SET body = ?, updated_at = ? WHERE id = ?', commentBody(input.body), now, comment.id);
+  } else if (input.action === 'comment_delete') {
+    if (comment.author_id !== actorId) await requireTripEdit(ctx, trip.id);
+    await ctx.db.exec('DELETE FROM trip_note_comments WHERE id = ? OR parent_id = ?', comment.id, comment.id);
+  } else if (input.action === 'comment_resolve') {
+    if (comment.parent_id) fail(400, 'Only a whole thread can be resolved.');
+    const resolved = input.resolved === true;
+    await ctx.db.exec('UPDATE trip_note_comments SET resolved_at = ?, resolved_by = ? WHERE id = ?',
+      resolved ? now : null, resolved ? actorId : null, comment.id);
+  } else fail(400, 'Unknown action.');
+  return tripComments(ctx, trip, noteId);
+}
+
 async function tripAction(input, ctx, authenticatedUserId = null) {
   if (input.action === 'links') {
     if (!Number.isSafeInteger(authenticatedUserId) || authenticatedUserId < 1) fail(401, 'Sign in first.');
@@ -995,7 +1161,11 @@ async function tripAction(input, ctx, authenticatedUserId = null) {
   if (['folders', 'folder_create', 'folder_icon', 'folder_archive', 'folder_move', 'folder_parent'].includes(input.action)) {
     return tripFolderAction(input, ctx);
   }
-  if (input.action === 'list') return tripNotes(ctx, tripId, input.folder_id ? id(input.folder_id) : null);
+  if (input.action === 'list') {
+    const actorId = authenticatedUserId ?? input.actor_id;
+    const trip = await checkTrip(ctx, tripId);
+    return tripNotes(ctx, trip.id, input.folder_id ? id(input.folder_id) : null, actorId ? await tripActor(ctx, trip, actorId) : null);
+  }
   if (input.action === 'asset') return asset(ctx, null, input);
   if (input.action === 'begin_note') return beginTripNote(ctx, input);
   await checkTrip(ctx, tripId);
@@ -1006,21 +1176,22 @@ async function tripAction(input, ctx, authenticatedUserId = null) {
     await requireTripEdit(ctx, tripId);
     await ctx.db.tx([
       { sql: 'DELETE FROM trip_note_folders WHERE trip_id = ? AND note_id = ?', args: [tripId, noteId] },
+      { sql: 'DELETE FROM trip_note_comments WHERE trip_id = ? AND note_id = ?', args: [tripId, noteId] },
       { sql: 'DELETE FROM snapshot_assets WHERE trip_id = ? AND note_id = ?', args: [tripId, noteId] },
       { sql: 'DELETE FROM trip_note_snapshots WHERE trip_id = ? AND note_id = ?', args: [tripId, noteId] },
       { sql: 'DELETE FROM trip_note_links WHERE trip_id = ? AND note_id = ?', args: [tripId, noteId] },
     ]);
     return { removed: true };
   }
-  if (input.action === 'excerpt') {
-    const { notes } = await tripNotes(ctx, tripId);
-    const note = notes.find((item) => item.id === id(input.note_id) && !item.unavailable);
-    if (!note) fail(404, 'Linked note not found.');
-    const dayId = await checkDay(ctx, tripId, input.day_id);
-    if (!dayId) fail(400, 'Choose a day.');
-    const excerpt = text(input.text, 500, 'excerpt').trim();
-    if (!excerpt) fail(400, 'An excerpt is required.');
-    return ctx.daynotes.create(tripId, dayId, { text: excerpt });
+  if (['comments', 'comment_add', 'comment_edit', 'comment_delete', 'comment_resolve', 'snapshot_save', 'snapshot_convert',
+    'upload'].includes(input.action)) {
+    const trip = await checkTrip(ctx, tripId);
+    const actorId = await tripActor(ctx, trip, authenticatedUserId ?? input.actor_id);
+    if (input.action === 'snapshot_save') return saveSnapshot(ctx, trip, input, actorId);
+    if (input.action === 'snapshot_convert') return convertToSnapshot(ctx, trip, input, actorId);
+    // Only snapshot editors upload from a trip; the image is copied into the snapshot when it is saved.
+    if (input.action === 'upload') { await requireTripEdit(ctx, trip.id); return uploads.upload(ctx, actorId, input); }
+    return commentAction(input, ctx, trip, actorId);
   }
   fail(400, 'Unknown action.');
 }
@@ -1199,6 +1370,11 @@ async function deleteUserData(ctx, userId) {
     { sql: 'DELETE FROM note_presence WHERE user_id = ? OR note_id IN (SELECT id FROM notes WHERE owner_id = ?)', args: [userId, userId] },
     { sql: 'DELETE FROM note_updates WHERE note_id IN (SELECT id FROM notes WHERE owner_id = ?)', args: [userId] },
     { sql: 'DELETE FROM note_crdt WHERE note_id IN (SELECT id FROM notes WHERE owner_id = ?)', args: [userId] },
+    // A thread goes with its opening comment; the links removed below take their discussions along.
+    { sql: `DELETE FROM trip_note_comments WHERE author_id = ? OR parent_id IN (SELECT id FROM trip_note_comments WHERE author_id = ?)
+      OR note_id IN (SELECT id FROM notes WHERE owner_id = ?) OR EXISTS (
+      SELECT 1 FROM trip_note_links l WHERE l.trip_id = trip_note_comments.trip_id AND l.note_id = trip_note_comments.note_id
+      AND (l.source_owner_id = ? OR l.linked_by = ?))`, args: [userId, userId, userId, userId, userId] },
     { sql: `DELETE FROM trip_note_folders WHERE EXISTS (
       SELECT 1 FROM trip_note_links l WHERE l.trip_id = trip_note_folders.trip_id AND l.note_id = trip_note_folders.note_id
       AND (l.source_owner_id = ? OR l.linked_by = ?))`, args: [userId, userId] },
@@ -1225,7 +1401,7 @@ async function deleteUserData(ctx, userId) {
 
 async function exportUserData(ctx, userId) {
   const [notes, noteAssets, folders, noteCollaborators, folderCollaborators,
-    tripLinks, tripSnapshots, tripSnapshotAssets] = await Promise.all([
+    tripLinks, tripSnapshots, tripSnapshotAssets, tripNoteComments] = await Promise.all([
     ctx.db.query('SELECT * FROM notes WHERE owner_id = ?', userId),
     ctx.db.query('SELECT * FROM note_assets WHERE owner_id = ?', userId),
     ctx.db.query('SELECT * FROM folders WHERE owner_id = ?', userId),
@@ -1238,8 +1414,10 @@ async function exportUserData(ctx, userId) {
       WHERE l.source_owner_id = ? OR l.linked_by = ?`, userId, userId),
     ctx.db.query(`SELECT a.* FROM snapshot_assets a JOIN trip_note_links l USING (trip_id, note_id)
       WHERE l.source_owner_id = ? OR l.linked_by = ?`, userId, userId),
+    ctx.db.query('SELECT * FROM trip_note_comments WHERE author_id = ?', userId),
   ]);
-  return { notes, noteAssets, folders, noteCollaborators, folderCollaborators, tripLinks, tripSnapshots, tripSnapshotAssets };
+  return { notes, noteAssets, folders, noteCollaborators, folderCollaborators, tripLinks, tripSnapshots, tripSnapshotAssets,
+    tripComments: tripNoteComments };
 }
 
 const json = (status, value) => ({ status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });

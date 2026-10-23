@@ -1,7 +1,8 @@
 import React, { useEffect, useReducer, useState } from 'react';
 import { CollabSession, propertiesOf, replaceText, setProperties, type CollabStatus } from './collab';
 import { PropertyEditor } from './properties';
-import { IconPicker, firstGrapheme } from './note-icon';
+import { IconPicker } from './note-icon';
+import { Avatar } from './collaborators';
 import { FolderField, VisibilityField, type FolderOption, type Visibility } from './note-fields';
 import type { Translate } from './i18n';
 import type { Invoke } from './api';
@@ -58,9 +59,7 @@ export function CollabEditor({ noteId, visibility, folderId, isOwner, folders, i
     <div className="fn-collab-bar">
       <div className="fn-collab-people" aria-label={t('People editing', '正在编辑的成员')}>
         {session.peers.length > 0 && <span className="fn-collab-avatars">{session.peers.map((peer) =>
-          <span key={peer.client_id} className="fn-collab-avatar"
-          style={{ '--peer': peer.color } as React.CSSProperties}
-            title={peer.name}>{firstGrapheme(peer.name).toUpperCase()}</span>)}</span>}
+          <Avatar key={peer.client_id} className="fn-collab-avatar" name={peer.name} color={peer.color} />)}</span>}
         <span className="trek-muted">{session.peers.length
           ? t('Others editing: {count}', '另有 {count} 人在编辑', { count: session.peers.length })
           : t('Only you', '仅你一人')}</span>

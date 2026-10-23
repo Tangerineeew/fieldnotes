@@ -128,7 +128,7 @@ A note can be brought into any number of trips, each time as a live reference or
 <p><b>How to add a note</b><br>Open a note and, under "Bring into a trip" in the sidebar, choose the trip, an optional day and the sharing mode. A private note someone else shared with you can only be added as a snapshot; sharing it live is the owner's decision.</p>
 <p><b>In trips</b><br>The owner sees in the sidebar which trips a note has been added to, and can jump straight to that trip's tab or remove the note from it.</p>
 <p><b>Linked to a day</b><br>When adding a note, you can pick a day of the trip; the note then shows that day in the trip.</p>
-<p><b>Copied into the day plan</b><br>While reading a note in a trip, you can copy an excerpt of up to 500 characters into a day's plan, where it becomes an ordinary day note. The original note is not changed.</p>
+<p><b>Discussed in the trip</b><br>Trip members can comment on a shared note, on the whole note or on a passage they select. Those comments belong to that trip and are not shown in your library.</p>
 </td>
 </tr>
 </table>
@@ -165,7 +165,6 @@ Fieldnotes keeps your notes, folders and images to itself and only asks TREK for
 | `db:read:files` | Finding images that come from files attached to a trip. |
 | `db:read:files:content` | Displaying those images and keeping a copy of them in snapshots. |
 | `db:meta` | Checking that you are allowed to edit a trip before you add, remove or arrange its notes. |
-| `db:write:daynotes` | Copying an excerpt you choose into a day of the trip plan. |
 | `db:read:users` | Showing who else is editing a note with you. |
 | `hook:user-data` | Including your notes when you export your TREK data, and deleting them when your account is deleted. |
 | `mcp:tools` | Letting an AI assistant connected to TREK read the notes shared with a trip you can access. TREK shows this as "Publishes AI tools". |

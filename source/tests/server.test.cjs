@@ -760,15 +760,109 @@ test('live sharing is revoked when the author leaves, frozen copies remain', asy
   assert.equal((await readTrip(remaining)).data.notes[0].unavailable, true);
 });
 
-test('day excerpt is explicit, capped and passed to native host capability', async (t) => {
+test('trip members discuss a note in threads; authors edit, editors moderate, unlinking takes the threads along', async (t) => {
+  const { owner, host, db } = await setup(t); const note = await create(owner); await link(owner, note);
+  const comment = (h, input) => h.request('POST', '/trip', { trip_id: 10, note_id: note.id, ...input });
+  const member = host(2, { trips: { 10: { members: [1, 2], data: { id: 10, user_id: 1, title: 'Japan' }, canEditTrip: false } } });
+  const opened = await comment(member, { action: 'comment_add', body: ' Is it still 500 yen? ', quote: 'Keep a spare.',
+    prefix: 'IC card\n', suffix: '' });
+  assert.equal(opened.status, 200, JSON.stringify(opened));
+  const [root] = opened.data;
+  assert.equal(root.author_id, 2); assert.equal(root.author.username, 'sherwin'); assert.equal(root.author.color, '#10b981');
+  assert.equal(root.body, 'Is it still 500 yen?'); assert.equal(root.quote, 'Keep a spare.'); assert.equal(root.prefix, 'IC card\n');
+  const replied = await comment(owner, { action: 'comment_add', parent_id: root.id, body: 'Yes.', quote: 'ignored' });
+  const reply = replied.data[1];
+  assert.equal(reply.parent_id, root.id); assert.equal(reply.quote, null);
+  assert.equal((await comment(owner, { action: 'comment_add', parent_id: reply.id, body: 'Nested' })).status, 404);
+  assert.equal((await comment(host(3), { action: 'comments' })).status, 403);
+  assert.equal((await comment(member, { action: 'comment_add', body: '   ' })).status, 400);
+  assert.equal((await comment(member, { action: 'comment_add', body: 'x'.repeat(2001) })).status, 400);
+  assert.equal((await comment(owner, { action: 'comment_edit', comment_id: root.id, body: 'Hijacked' })).status, 403);
+  const edited = await comment(member, { action: 'comment_edit', comment_id: root.id, body: 'Still 500 yen?' });
+  assert.equal(edited.data[0].body, 'Still 500 yen?');
+  const resolved = await comment(member, { action: 'comment_resolve', comment_id: root.id, resolved: true });
+  assert.ok(resolved.data[0].resolved_at); assert.equal(resolved.data[0].resolved_by, 2);
+  assert.equal((await comment(member, { action: 'comment_resolve', comment_id: root.id, resolved: false })).data[0].resolved_at, null);
+  assert.equal((await comment(member, { action: 'comment_resolve', comment_id: reply.id, resolved: true })).status, 400);
+  // Read-only members remove only their own words; trip editors may remove any thread, replies included.
+  assert.equal((await comment(member, { action: 'comment_delete', comment_id: reply.id })).status, 403);
+  assert.equal((await comment(owner, { action: 'comment_delete', comment_id: root.id })).data.length, 0);
+  await comment(member, { action: 'comment_add', body: 'About the whole note' });
+  assert.equal((await owner.request('POST', '/trip', { action: 'unlink', trip_id: 10, note_id: note.id })).status, 200);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM trip_note_comments').get().count, 0);
+  assert.equal((await comment(member, { action: 'comments' })).status, 404);
+});
+
+test('the companion stamps the signed-in author, whatever the page sends', async (t) => {
   const { owner, host } = await setup(t); const note = await create(owner); await link(owner, note);
-  const input = { action: 'excerpt', trip_id: 10, note_id: note.id, day_id: 101, text: 'Bring the IC card.' };
-  assert.equal((await owner.request('POST', '/trip', { ...input, text: 'x'.repeat(501) })).status, 400);
-  assert.equal((await owner.request('POST', '/trip', { ...input, day_id: 201 })).status, 400);
-  assert.equal((await owner.request('POST', '/trip', input)).status, 200);
-  assert.ok(owner.calls.some((call) => call.method === 'daynotes.create'));
-  const viewer = host(2, { trips: { 10: { members: [1, 2], data: { id: 10, user_id: 1 }, days: [{ id: 101 }], canEditDays: false } } });
-  assert.equal((await viewer.request('POST', '/trip', input)).status, 403);
+  const target = host(2);
+  const dependent = createMockHost({ grants: tripManifest.permissions, actingUserId: 2,
+    pluginExports: { fieldnotes: { trip: (args) => main.exports.trip(args, target.ctx) } } });
+  const response = await dependent.run(companion).route({ method: 'POST', path: '/trip' },
+    { body: { action: 'comment_add', trip_id: 10, note_id: note.id, body: 'Hi', actor_id: 1 } });
+  assert.equal(JSON.parse(response.body)[0].author_id, 2);
+  const outsider = { action: 'comment_add', trip_id: 10, note_id: note.id, body: 'Hi', actor_id: 3 };
+  assert.equal(outcome(await main.exports.trip(outsider, target.ctx)).status, 403);
+  assert.equal(outcome(await main.exports.trip({ action: 'comments', trip_id: 10, note_id: note.id }, target.ctx)).status, 401);
+});
+
+test('trip editors edit a snapshot in place, its images copied in and stale saves refused', async (t) => {
+  const { owner, host, db } = await setup(t);
+  const note = await create(owner, { content: '![station](fieldnotes://trip-file/10/5)' });
+  await link(owner, note, 10, 'snapshot'); await link(owner, note, 20);
+  const [snapshot] = (await readTrip(owner)).data.notes;
+  const save = (h, fields, trip = 10) => h.request('POST', '/trip', { action: 'snapshot_save', trip_id: trip, note_id: note.id,
+    version: snapshot.version, title: snapshot.title, content: snapshot.content, ...fields });
+  const readOnly = host(2, { trips: { 10: { members: [1, 2], data: { id: 10, user_id: 1 }, canEditTrip: false } } });
+  assert.equal((await save(readOnly, { content: 'No' })).status, 403);
+  assert.equal((await readOnly.request('POST', '/trip', { action: 'upload', trip_id: 10, part: 0, parts: 1, data: png })).status, 403);
+  assert.equal((await save(owner, {}, 20)).status, 404);
+  const uploaded = await host(2).request('POST', '/trip', { action: 'upload', trip_id: 10, part: 0, parts: 1, data: png });
+  assert.equal(uploaded.status, 200, JSON.stringify(uploaded));
+  const { source } = uploaded.data;
+  const saved = await save(host(2), { title: 'Transport for this trip', content: `![photo](${source})`, icon: '🚆' });
+  assert.equal(saved.status, 200, JSON.stringify(saved));
+  assert.equal(saved.data.title, 'Transport for this trip'); assert.equal(saved.data.icon, '🚆');
+  assert.equal(saved.data.mode, 'snapshot'); assert.equal(saved.data.version, snapshot.version + 1);
+  assert.deepEqual(db.prepare('SELECT source FROM snapshot_assets').all().map((row) => row.source), [source]);
+  assert.equal((await owner.request('GET', '/note', {}, { id: note.id })).data.content, note.content);
+  assert.equal((await save(owner, { content: 'Stale' })).status, 409);
+  assert.equal((await readTrip(owner)).data.notes[0].content, `![photo](${source})`);
+  // The snapshot keeps its own copy after the upload itself is gone.
+  db.prepare('DELETE FROM note_assets').run();
+  const image = await host(2).request('POST', '/trip', { action: 'asset', trip_id: 10, note_id: note.id, source });
+  assert.equal(image.data.data_url, `data:image/png;base64,${png}`);
+});
+
+test('live references turn into snapshots only for people who could import one', async (t) => {
+  const { owner, host, db } = await setup(t);
+  const note = await create(owner, { content: '![station](fieldnotes://trip-file/10/5)' });
+  await link(owner, note);
+  assert.equal((await readTrip(owner)).data.notes[0].can_snapshot, true);
+  assert.equal((await readTrip(host(2))).data.notes[0].can_snapshot, false);
+  const convert = (h) => h.request('POST', '/trip', { action: 'snapshot_convert', trip_id: 10, note_id: note.id });
+  assert.equal((await convert(host(2))).status, 403);
+  await owner.request('POST', '/trip', { action: 'comment_add', trip_id: 10, note_id: note.id, body: 'Keep this' });
+  const converted = await convert(owner);
+  assert.equal(converted.status, 200, JSON.stringify(converted));
+  assert.equal(converted.data.mode, 'snapshot'); assert.equal(converted.data.content, note.content);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM snapshot_assets').get().count, 1);
+  assert.equal((await convert(owner)).status, 409);
+  await owner.request('POST', '/save', { ...note, content: 'Changed later' });
+  assert.equal((await readTrip(host(2))).data.notes[0].content, note.content);
+  assert.equal((await owner.request('POST', '/trip', { action: 'comments', trip_id: 10, note_id: note.id })).data.length, 1);
+});
+
+test('user erasure removes authored comments with their threads; export lists them', async (t) => {
+  const { owner, host, db } = await setup(t); const note = await create(owner); await link(owner, note);
+  const comment = (h, input) => h.request('POST', '/trip', { trip_id: 10, note_id: note.id, ...input });
+  const [kept] = (await comment(owner, { action: 'comment_add', body: 'Owner thread' })).data;
+  await comment(host(2), { action: 'comment_add', parent_id: kept.id, body: 'Member reply' });
+  const opened = (await comment(host(2), { action: 'comment_add', body: 'Member thread' })).data.at(-1);
+  await comment(owner, { action: 'comment_add', parent_id: opened.id, body: 'Owner reply' });
+  assert.equal((await owner.run(main).exportUserData(2)).tripComments.length, 2);
+  await owner.run(main).deleteUserData(2);
+  assert.deepEqual(db.prepare('SELECT body FROM trip_note_comments').all().map((row) => row.body), ['Owner thread']);
 });
 
 test('trip fieldnote folders scope links without changing the source note folder', async (t) => {
