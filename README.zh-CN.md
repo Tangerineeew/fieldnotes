@@ -192,7 +192,14 @@ Fieldnotes 把你的笔记、文件夹和图片保存在自己那里，只向 TR
 
 ## 开发者
 
-仓库顶层就是可以直接安装的插件，源代码、测试和构建说明位于 [`source/`](./source) 目录。
+仓库顶层就是可以直接安装的插件。源代码和测试位于 [`source/`](./source) 目录，Trip Fieldnotes 也由这里构建，修改都在这里进行。
+
+```bash
+cd source
+npm ci
+npm test         # 服务端、前端和翻译测试
+npm run export   # 重新构建，并更新本仓库和同级 fieldnotes-trip 仓库中的插件文件
+```
 
 ## 许可证
 

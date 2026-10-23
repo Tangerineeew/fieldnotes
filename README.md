@@ -191,7 +191,14 @@ Optional: notes can show images linked from other websites once you allow those 
 
 ## For developers
 
-The ready-to-install plugin sits at the top of this repository, and its source code, tests and build instructions are in [`source/`](./source).
+The ready-to-install plugin sits at the top of this repository. Its source code and tests are in [`source/`](./source), which also builds Trip Fieldnotes; that is where changes are made.
+
+```bash
+cd source
+npm ci
+npm test         # server, client and translation tests
+npm run export   # rebuilds the plugin files here and in the sibling fieldnotes-trip checkout
+```
 
 ## License
 
