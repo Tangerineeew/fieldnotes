@@ -1,0 +1,6 @@
+node_modules/
+plugin.zip
+*.zip
+.DS_Store
+source/node_modules/
+source/dist/

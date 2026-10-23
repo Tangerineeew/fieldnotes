@@ -1,0 +1,52 @@
+{
+  "actingUserId": 1,
+  "trips": {
+    "10": {
+      "members": [
+        1,
+        2
+      ],
+      "data": {
+        "id": 10,
+        "user_id": 1,
+        "title": "Japan · QA"
+      },
+      "days": [
+        {
+          "id": 101,
+          "trip_id": 10,
+          "date": "2026-10-01",
+          "title": "Tokyo"
+        }
+      ]
+    },
+    "20": {
+      "members": [
+        1
+      ],
+      "data": {
+        "id": 20,
+        "user_id": 1,
+        "title": "Korea · QA"
+      },
+      "days": [
+        {
+          "id": 201,
+          "trip_id": 20,
+          "date": "2026-11-01",
+          "title": "Seoul"
+        }
+      ]
+    }
+  },
+  "users": {
+    "1": {
+      "id": 1,
+      "display_name": "Tangerine"
+    },
+    "2": {
+      "id": 2,
+      "username": "sherwin"
+    }
+  }
+}

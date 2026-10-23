@@ -1,0 +1,17 @@
+{
+  "id": "fieldnotes",
+  "name": "Fieldnotes",
+  "description": "A private Markdown library with explicit trip sharing, live references and frozen travel copies.",
+  "version": "0.2.0",
+  "apiVersion": 1,
+  "type": "page",
+  "author": "Xuyu Wang",
+  "icon": "NotebookPen",
+  "trek": ">=4.3.0 <4.4.0",
+  "nativeModules": false,
+  "permissions": ["db:own", "db:read:trips", "db:read:files", "db:read:files:content", "db:meta", "db:write:daynotes", "db:read:users", "hook:user-data", "http:outbound"],
+  "operatorEgress": true,
+  "capabilities": {
+    "provides": ["trip"]
+  }
+}

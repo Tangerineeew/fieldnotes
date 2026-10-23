@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.trek-dev/
+*.log

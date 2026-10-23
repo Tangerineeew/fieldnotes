@@ -1,0 +1,7 @@
+{
+  "uploadPartChars": 90000,
+  "maxImageBytes": 4194304,
+  "maxContentChars": 24000,
+  "maxContentBytes": 40000,
+  "maxPropertiesBytes": 32000
+}

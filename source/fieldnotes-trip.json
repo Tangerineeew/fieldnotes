@@ -1,0 +1,14 @@
+{
+  "id": "fieldnotes-trip",
+  "name": "Trip Fieldnotes",
+  "description": "Shared trip knowledge: linked Fieldnotes and saved snapshots.",
+  "version": "0.2.0",
+  "apiVersion": 1,
+  "type": "trip-page",
+  "author": "Xuyu Wang",
+  "icon": "NotebookPen",
+  "trek": ">=4.3.0 <4.4.0",
+  "nativeModules": false,
+  "permissions": [],
+  "pluginDependencies": [{"id": "fieldnotes", "version": ">=0.1.0"}]
+}
