@@ -22,6 +22,12 @@ module.exports = definePlugin({
     // Only trip-scoped operations are exposed. No caller-supplied user identity is trusted.
     trip: (args, ctx) => respond(() => tripAction(args, ctx)),
   },
+  hooks: {
+    mcpToolProvider: {
+      tools: ['list_trip_notes'],
+      callTool: ({ args }, ctx) => tripAction({ trip_id: args.trip_id, action: 'list' }, ctx),
+    },
+  },
   deleteUserData: ({ userId }, ctx) => deleteUserData(ctx, userId),
   exportUserData: ({ userId }, ctx) => exportUserData(ctx, userId),
 });

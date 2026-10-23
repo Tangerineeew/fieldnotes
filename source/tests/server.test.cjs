@@ -841,6 +841,15 @@ test('companion calls declared dependency export, not a private or impersonated 
   assert.equal(tripManifest.pluginDependencies[0].id, manifest.id);
 });
 
+test('declared MCP tool is wired and fails closed for inaccessible trips', async (t) => {
+  const { owner, host } = await setup(t); const note = await create(owner); await link(owner, note);
+  assert.deepEqual(manifest.capabilities.mcpTools.map((tool) => tool.name), main.hooks.mcpToolProvider.tools);
+  const result = await owner.run(main).hook('mcpToolProvider', 'callTool', { name: 'list_trip_notes', args: { trip_id: 10 } });
+  assert.equal(result.notes[0].id, note.id);
+  await assert.rejects(host(3).run(main).hook('mcpToolProvider', 'callTool', { name: 'list_trip_notes', args: { trip_id: 10 } }),
+    /RESOURCE_FORBIDDEN/);
+});
+
 test('unlink preserves original; GDPR hook deletes only the specified owner', async (t) => {
   const { owner, host } = await setup(t); const note = await create(owner); await create(host(2)); await link(owner, note);
   await owner.request('POST', '/trip', { action: 'unlink', trip_id: 10, note_id: note.id });

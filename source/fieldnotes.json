@@ -9,9 +9,18 @@
   "icon": "NotebookPen",
   "trek": ">=4.3.0 <4.4.0",
   "nativeModules": false,
-  "permissions": ["db:own", "db:read:trips", "db:read:files", "db:read:files:content", "db:meta", "db:write:daynotes", "db:read:users", "hook:user-data", "http:outbound"],
+  "permissions": ["db:own", "db:read:trips", "db:read:files", "db:read:files:content", "db:meta", "db:write:daynotes", "db:read:users", "hook:user-data", "mcp:tools", "http:outbound"],
   "operatorEgress": true,
   "capabilities": {
-    "provides": ["trip"]
+    "provides": ["trip"],
+    "mcpTools": [{
+      "name": "list_trip_notes",
+      "description": "Read the notes explicitly shared with a trip accessible to the requesting user.",
+      "inputSchema": {
+        "type": "object", "properties": {"trip_id": {"type": "integer", "minimum": 1}},
+        "required": ["trip_id"], "additionalProperties": false
+      },
+      "annotations": {"destructiveHint": false}
+    }]
   }
 }
