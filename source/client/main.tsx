@@ -7,7 +7,7 @@ import {
 import { attachmentFiles, uploadAttachment } from './images';
 import { setPdfText } from './pdf';
 import { TREK_PREFIX, setTrekText, trekPath, trekSourcesInMarkdown, type TrekObject } from './trek-objects';
-import { maxContentChars, maxImageBytes, maxPdfBytes, maxTitleChars } from '../shared/limits.json';
+import { assetBatch, maxContentChars, maxImageBytes, maxPdfBytes, maxTitleChars } from '../shared/limits.json';
 import { createLiveEditor, type LinkTarget, type TripPdf } from './live-editor';
 import { CollabEditor, FloatingNotice } from './collab-editor';
 import type { CollabSession } from './collab';
@@ -16,7 +16,7 @@ import type { Extension } from '@codemirror/state';
 import { PropertyList, PropertySection, type Property } from './properties';
 import { WritingStats } from './writing-stats';
 import { translate, type Translate } from './i18n';
-import { RequestError, withErrors, withParts, type Invoke } from './api';
+import { RequestError, whenIdle, withErrors, withParts, type Invoke } from './api';
 import { Avatar, CollaboratorEditor, personName, useCollaborators, type Collaborator, type Person } from './collaborators';
 import { Icon, type IconName } from './icons';
 import { HistoryView, type Version } from './history';
@@ -438,11 +438,11 @@ function App() {
     const nested = [...new Set(embedded.flatMap((link) => referenceSourcesInMarkdown(link.content!)))]
       .filter((reference) => !requestedReferences.current.has(reference));
     nested.forEach((reference) => requestedReferences.current.add(reference));
-    const images = embedded.flatMap((link) => imageSourcesInMarkdown(link.content!).map((source) => [link.id!, source] as const))
-      .filter(([noteId, source]) => !requestedImages.current.has(`${noteId} ${source}`));
-    images.forEach(([noteId, source]) => requestedImages.current.add(`${noteId} ${source}`));
+    const images = embedded.map((link) => [link.id!, imageSourcesInMarkdown(link.content!)
+      .filter((source) => !requestedImages.current.has(`${link.id} ${source}`))] as const);
+    images.forEach(([noteId, sources]) => sources.forEach((source) => requestedImages.current.add(`${noteId} ${source}`)));
     const [more, pictures] = await Promise.all([Promise.all(nested.map((reference) => resolveReference(reference, viewTripId))),
-      Promise.all(images.map(([noteId, source]) => resolveImage({ id: noteId } as Note, viewTripId, source)))]);
+      Promise.all(images.map(([noteId, sources]) => resolveImages(noteId, viewTripId, sources))).then((lists) => lists.flat())]);
     if (nested.length) setReferenceLinks((current) => mergeLinks(current, linksOf(more)));
     if (pictures.length) setImageSources((current) => ({ ...current, ...Object.fromEntries(pictures) }));
   }
@@ -547,12 +547,14 @@ function App() {
     const embeds = new Set(embedSourcesInMarkdown(content));
     const missing = referenceSourcesInMarkdown(content).filter((reference) => !referenceLinks[reference]
       || (embeds.has(reference) && referenceLinks[reference].content === undefined));
+    const sources = imageSourcesInMarkdown(content);
+    const known = versionId ? [] : sources.filter((source) => imageSources[source]);
     const [images, links] = await Promise.all([
-      Promise.all(imageSourcesInMarkdown(content).map((source) => imageSources[source] && !versionId
-        ? [source, imageSources[source]] as const : resolveImage(note, tripId, source, versionId || undefined))),
+      resolveImages(note.id, tripId, sources.filter((source) => !known.includes(source)), versionId || undefined),
       Promise.all(missing.map((reference) => resolveReference(reference, tripId, embeds.has(reference)))),
     ]);
-    return [Object.fromEntries(images), { ...referenceLinks, ...linksOf(links) }];
+    return [{ ...Object.fromEntries(known.map((source) => [source, imageSources[source]])), ...Object.fromEntries(images) },
+      { ...referenceLinks, ...linksOf(links) }];
   }
   // Restoring is one more change: the text it replaces stays in the history.
   async function restoreVersion(version: Version) {
@@ -573,32 +575,41 @@ function App() {
     await loadBacklinks(note);
     setStatus(t('Linked the mentions in “{note}”.', '已链接“{note}”中的提及。', { note: source.title }));
   }
-  // Resolves one image source to a data URL, or to IMAGE_ERROR plus a readable reason. An image of an earlier version is
-  // asked for with that version, as the note itself may no longer show it.
-  async function resolveImage(item: Note, viewTripId: number | null, source: string, versionId?: string) {
-    try {
-      const query = { note_id: item.id, source, ...(viewTripId ? { trip_id: viewTripId } : {}),
+  // Resolves image sources to data URLs, or to IMAGE_ERROR plus a readable reason, a batch per request so a note full of images
+  // stays within what TREK lets a plugin call; a batch refused while Fieldnotes is busy waits and asks again. An image of an
+  // earlier version is asked for with that version, as the note itself may no longer show it.
+  async function resolveImages(noteId: string, viewTripId: number | null, sources: string[], versionId?: string) {
+    type Batch = { images: { source: string; data_url?: string; error?: string; status?: number; template?: string }[];
+      rest: string[] };
+    const resolved: (readonly [string, string])[] = []; let queue = sources;
+    while (queue.length) {
+      const batch = queue.slice(0, assetBatch); queue = queue.slice(assetBatch);
+      const body = { note_id: noteId, sources: batch, ...(viewTripId ? { trip_id: viewTripId } : {}),
         ...(versionId ? { version_id: versionId } : {}) };
-      const result = viewTripId
-        ? await post<{ source: string; data_url: string }>('/trip', { action: 'asset', ...query })
-        : await invoke<{ source: string; data_url: string }>(`/asset?note_id=${encodeURIComponent(item.id)}`
-          + `&source=${encodeURIComponent(source)}${versionId ? `&version_id=${encodeURIComponent(versionId)}` : ''}`);
-      return [result.source, result.data_url] as const;
-    } catch (error) { return [source, `${IMAGE_ERROR}${imageFailure(error)}`] as const; }
+      try {
+        const result = await whenIdle(() => viewTripId ? post<Batch>('/trip', { action: 'assets', ...body }) : post<Batch>('/assets', body));
+        for (const image of result.images) {
+          resolved.push([image.source, image.data_url
+            ?? `${IMAGE_ERROR}${imageFailure(new RequestError(image.error || '', image.status || 0, image.template || ''))}`]);
+        }
+        queue = [...result.rest, ...queue];
+      } catch (error) { resolved.push(...batch.map((source) => [source, `${IMAGE_ERROR}${imageFailure(error)}`] as const)); }
+    }
+    return resolved;
   }
   async function hydrateImages(item: Note, viewTripId: number | null) {
     const sources = imageSourcesInMarkdown(item.content);
     requestedImages.current = new Set(sources.map((source) => `${item.id} ${source}`));
-    setImageSources(Object.fromEntries(await Promise.all(sources.map((source) => resolveImage(item, viewTripId, source)))));
+    setImageSources(Object.fromEntries(await resolveImages(item.id, viewTripId, sources)));
   }
   // While co-editing, images others insert arrive as text: fetch each new source once, after typing settles.
   function hydrateNewImages(item: Note, content: string) {
     window.clearTimeout(hydrateTimer.current);
     hydrateTimer.current = window.setTimeout(() => {
-      for (const source of imageSourcesInMarkdown(content)) {
-        if (requestedImages.current.has(`${item.id} ${source}`)) continue;
-        requestedImages.current.add(`${item.id} ${source}`);
-        void resolveImage(item, tripId, source).then(([key, value]) => setImageSources((current) => ({ ...current, [key]: value })));
+      const fresh = imageSourcesInMarkdown(content).filter((source) => !requestedImages.current.has(`${item.id} ${source}`));
+      fresh.forEach((source) => requestedImages.current.add(`${item.id} ${source}`));
+      if (fresh.length) {
+        void resolveImages(item.id, tripId, fresh).then((images) => setImageSources((current) => ({ ...current, ...Object.fromEntries(images) })));
       }
     }, 800);
   }

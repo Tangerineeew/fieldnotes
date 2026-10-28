@@ -5,7 +5,7 @@ const dns = require('node:dns/promises');
 const https = require('node:https');
 const { isIP } = require('node:net');
 const {
-  maxImageBytes, maxPdfBytes, maxContentChars, maxContentBytes, maxPropertiesBytes, maxCommentChars, maxQuoteChars, quoteContextChars,
+  assetBatch, maxImageBytes, maxPdfBytes, maxContentChars, maxContentBytes, maxPropertiesBytes, maxCommentChars, maxQuoteChars, quoteContextChars,
   maxTitleChars, maxIconChars, maxProperties, maxPropertyOptions, maxPropertyNameChars, maxPropertyTextChars, maxChecklistItems,
   propertyColors
 } = require('../shared/limits.json');
@@ -822,24 +822,25 @@ async function collaboratorAction(input, ctx, userId) {
 }
 
 // With `versionId` the image belongs to a kept version, which only the note's editors may read.
-async function noteForAsset(ctx, userId, noteId, tripId, source, versionId) {
+// The images the note (or the earlier version of it) shows, as only those may be read through it.
+async function shownImages(ctx, userId, noteId, tripId, versionId) {
   if (versionId) {
     const version = tripId === null ? await history.read(ctx, userId, noteId, versionId)
       : await snapshotHistory.read(ctx, userId, snapshotKey(tripId, id(noteId)), versionId);
-    if (!imageSources(version.content).includes(source)) fail(404, 'Image not found.');
-    return version;
+    return new Set(imageSources(version.content));
   }
   const note = tripId === null ? await readable(ctx, userId, noteId)
     : (await tripNotes(ctx, await checkTrip(ctx, tripId))).notes.find((item) => item.id === id(noteId) && !item.unavailable);
-  if (!note || !imageSources(note.content).includes(source)) fail(404, 'Image not found.');
-  return note;
+  if (!note) fail(404, 'Image not found.');
+  return new Set(imageSources(note.content));
 }
+const assetTrip = (input) => input.trip_id === undefined || input.trip_id === null || input.trip_id === '' ? null : number(input.trip_id);
 
 async function asset(ctx, userId, input) {
   const noteId = id(input.note_id);
   const source = text(input.source, 2048, 'image source');
-  const tripId = input.trip_id === undefined || input.trip_id === null || input.trip_id === '' ? null : number(input.trip_id);
-  await noteForAsset(ctx, userId, noteId, tripId, source, input.version_id);
+  const tripId = assetTrip(input);
+  if (!(await shownImages(ctx, userId, noteId, tripId, input.version_id)).has(source)) fail(404, 'Image not found.');
   if (tripId !== null) {
     const [snapshot] = await ctx.db.query(`SELECT mimetype, size, content_base64 FROM snapshot_assets
       WHERE trip_id = ? AND note_id = ? AND source = ?`, tripId, noteId, source);
@@ -849,6 +850,39 @@ async function asset(ctx, userId, input) {
   if (uploaded) return { source, ...imageData(uploaded, 'uploaded image') };
   if (/^https:\/\//i.test(source)) return { source, ...await fetchExternalImage(source) };
   fail(400, 'Unsupported image source.');
+}
+
+// Up to `assetBatch` of a note's images per request, behind one access check and one read: TREK caps how often a plugin may call
+// it, and a note full of images fetched one by one would run past that cap. A failed image comes back as its error; once a response
+// holds ASSET_BATCH_CHARS of data the rest is left for the next request.
+const ASSET_BATCH_CHARS = 4 * 1024 * 1024;
+async function assets(ctx, userId, input) {
+  if (!Array.isArray(input.sources) || !input.sources.length || input.sources.length > assetBatch) {
+    fail(400, 'Invalid value: {field}.', { field: 'image source' });
+  }
+  const sources = [...new Set(input.sources.map((source) => text(source, 2048, 'image source')))];
+  const noteId = id(input.note_id); const tripId = assetTrip(input);
+  const shown = await shownImages(ctx, userId, noteId, tripId, input.version_id);
+  const kept = tripId === null ? [] : await ctx.db.query(`SELECT source, mimetype, size, content_base64 FROM snapshot_assets
+    WHERE trip_id = ? AND note_id = ? AND source IN (SELECT value FROM json_each(?))`, tripId, noteId, JSON.stringify(sources));
+  const snapshots = new Map(kept.map((row) => [row.source, row]));
+  const uploaded = await uploads.readMany(ctx, sources.filter((source) => shown.has(source) && !snapshots.has(source)));
+  const images = []; let chars = 0;
+  for (const [index, source] of sources.entries()) {
+    if (images.length && chars >= ASSET_BATCH_CHARS) return { images, rest: sources.slice(index) };
+    try {
+      if (!shown.has(source)) fail(404, 'Image not found.');
+      const image = snapshots.has(source) ? imageData(snapshots.get(source))
+        : uploaded.has(source) ? imageData(uploaded.get(source), 'uploaded image')
+          : uploads.isUpload(source) ? fail(404, 'This file was deleted.')
+            : /^https:\/\//i.test(source) ? await fetchExternalImage(source) : fail(400, 'Unsupported image source.');
+      images.push({ source, data_url: image.data_url }); chars += image.data_url.length;
+    } catch (error) {
+      if (!(error instanceof Problem)) throw error;
+      images.push({ source, error: error.message, status: error.status, template: error.template, params: error.params });
+    }
+  }
+  return { images, rest: [] };
 }
 
 // `keptBytes` counts the copies a snapshot already holds, so an edit cannot grow it past the same cap. A trip's own files are
@@ -1166,6 +1200,7 @@ async function tripAction(raw, ctx, authenticatedUserId = null) {
   }
   // An image of an earlier version is for the people who may read that history, so it is the one trip read that names its reader.
   if (input.action === 'asset') return asset(ctx, input.version_id ? Number(sender) : null, input);
+  if (input.action === 'assets') return assets(ctx, input.version_id ? Number(sender) : null, input);
   const trip = await checkTrip(ctx, tripId);
   if (['folders', 'folder_create', 'folder_icon', 'folder_archive', 'folder_move', 'folder_move_note'].includes(input.action)) {
     return tripFolderAction(input, ctx, trip);
@@ -1807,6 +1842,7 @@ async function handle(action, req, ctx) {
   if (action === 'version') return history.read(ctx, userId, query.note_id, query.id);
   if (action === 'restore') return restoreVersion(ctx, userId, body);
   if (action === 'asset') return asset(ctx, userId, query);
+  if (action === 'assets') return assets(ctx, userId, body);
   if (action === 'upload') return uploads.upload(ctx, userId, body);
   if (action === 'collaborators') return collaborators(ctx, userId, query.note_id);
   if (action === 'collaborator') return collaboratorAction(body, ctx, userId);
@@ -1964,6 +2000,8 @@ async function respond(fn) {
     console.error('[Fieldnotes] request failed:', error instanceof Error ? error.stack : String(error));
     const problem = error instanceof Problem ? error
       : /RESOURCE_FORBIDDEN|PERMISSION_DENIED/.test(error?.message) ? new Problem(403, 'You do not have permission to do this.')
+        // TREK caps how often a plugin may call it; the same request succeeds once the budget refills.
+        : /rate limit exceeded/i.test(error?.message) ? new Problem(503, 'Fieldnotes is busy. Try again in a moment.')
         : error?.status >= 400 && error.status < 500 ? new Problem(error.status, String(error.message)) : null;
     if (!problem) return json(500, { error: 'Request failed. Try again or check the plugin logs.' });
     return json(200, { error: problem.message, status: problem.status, template: problem.template, params: problem.params });

@@ -38,11 +38,17 @@ async function setup(t) {
     const users = { 1: { id: 1, display_name: 'Tangerine' }, 2: { id: 2, username: 'sherwin' }, 3: { id: 3, username: 'matro' } };
     const h = createMockHost({ grants: manifest.permissions, actingUserId: userId, trips, users, ...extra });
     const base = h.ctx.db;
+    // `calls` counts what the host would bill against the plugin's call budget; `busy` fails the next call as the host does then.
+    const count = () => {
+      sql.calls += 1;
+      if (sql.busy) { sql.busy = false; throw new Error('HOST_ERROR: rate limit exceeded — slow down ctx.* calls'); }
+    };
     const sql = {
-      async query(query, ...args) { await base.query(query, ...args); return db.prepare(query).all(...args); },
-      async exec(query, ...args) { await base.exec(query, ...args); return db.prepare(query).run(...args); },
+      calls: 0,
+      async query(query, ...args) { count(); await base.query(query, ...args); return db.prepare(query).all(...args); },
+      async exec(query, ...args) { count(); await base.exec(query, ...args); return db.prepare(query).run(...args); },
       async tx(ops) {
-        await base.tx(ops);
+        count(); await base.tx(ops);
         db.exec('BEGIN IMMEDIATE');
         try {
           const results = ops.map((op, index) => {
@@ -142,6 +148,32 @@ test('public notes are readable without exposing private notes', async (t) => {
   assert.equal((await host(2).request('GET', '/public')).data.notes[0].id, publicNote.id);
   await link(owner, publicNote);
   assert.equal((await readTrip(host(2))).data.notes[0].id, publicNote.id);
+});
+
+test('a note’s images come in batches behind one access check, each failure on its own', async (t) => {
+  const { owner, host } = await setup(t);
+  const sources = [];
+  for (let index = 0; index < 3; index += 1) sources.push((await upload(owner)).data.source);
+  const note = await create(owner, { content: sources.map((source, index) => `![photo ${index}](${source})`).join('\n\n') });
+  const unshown = 'fieldnotes://asset/00000000-0000-4000-8000-000000000000';
+  let before = owner.ctx.db.calls;
+  const batch = await owner.request('POST', '/assets', { note_id: note.id, sources: [...sources, unshown] });
+  const batchCalls = owner.ctx.db.calls - before;
+  assert.equal(batch.status, 200); assert.deepEqual(batch.data.rest, []);
+  assert.deepEqual(batch.data.images.map((image) => image.source), [...sources, unshown]);
+  assert.ok(batch.data.images.slice(0, 3).every((image) => /^data:image\/png;base64,/.test(image.data_url)));
+  assert.equal(batch.data.images[3].status, 404);
+  before = owner.ctx.db.calls;
+  await owner.request('GET', '/asset', {}, { note_id: note.id, source: sources[0] });
+  // Four images cost what one costs on its own, plus the one call any POST spends on its body; nothing per image.
+  assert.ok(batchCalls <= owner.ctx.db.calls - before + 1, `${batchCalls} calls for four images`);
+  assert.equal((await host(2).request('POST', '/assets', { note_id: note.id, sources })).status, 404);
+  await link(owner, note);
+  const trip = await host(2).request('POST', '/assets', { note_id: note.id, trip_id: 10, sources });
+  assert.equal(trip.data.images.filter((image) => image.data_url).length, 3);
+  assert.equal((await owner.request('POST', '/assets', { note_id: note.id, sources: Array(9).fill(sources[0]) })).status, 400);
+  owner.ctx.db.busy = true;
+  assert.equal((await owner.request('POST', '/assets', { note_id: note.id, sources })).status, 503);
 });
 
 test('image resources enforce note, trip and snapshot permissions', async (t) => {

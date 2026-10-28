@@ -11,6 +11,19 @@ export class RequestError extends Error {
   constructor(message: string, readonly code: number, readonly template: string) { super(message); }
 }
 
+// TREK caps how often a plugin may call it, so a request refused while Fieldnotes (503) or the host (429) is busy succeeds once
+// that budget refills: it is asked again after a growing pause.
+export async function whenIdle<T>(request: () => Promise<T>, pauses = [1000, 2000, 4000]): Promise<T> {
+  for (const pause of pauses) {
+    try { return await request(); }
+    catch (error) {
+      if (!(error instanceof RequestError) || (error.code !== 503 && error.code !== 429)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, pause));
+    }
+  }
+  return request();
+}
+
 // Base64 for bytes of any size: `String.fromCharCode` takes them in slices, since spreading a large array overflows the stack.
 export function encodeBase64(bytes: Uint8Array) {
   let binary = '';

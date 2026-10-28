@@ -87,6 +87,7 @@ async function ui(t, options = {}) {
         version: current.version + 1 }; return current; }
       // A trip page co-edits a snapshot through the companion's /trip route.
       if (sub === '/trip' && init.body.action === 'collab') return collab({ ...init.body, action: init.body.op });
+      if (sub === '/assets' || (sub === '/trip' && init.body.action === 'assets')) return { images: [], rest: [] };
       if (sub === '/trip' && init.body.action === 'days') return [{ id: 101, date: '2026-10-01', title: 'Tokyo' }];
       if (sub === '/trip' && init.body.action === 'list') return { trip: { id: 10, title: 'Japan trip' },
         notes: [{ ...current, mode: 'live' }] };
@@ -1022,7 +1023,7 @@ test('client renders a resolved internal image resource without loading its sour
   const source = 'fieldnotes://asset/dddddddd-dddd-4ddd-8ddd-dddddddddddd';
   const app = await ui(t, {
     note: { content: `![station](${source})` },
-    invoke: (sub) => sub.startsWith('/asset') ? { source, data_url: 'data:image/png;base64,cG5n' } : undefined,
+    invoke: (sub) => sub === '/assets' ? { images: [{ source, data_url: 'data:image/png;base64,cG5n' }], rest: [] } : undefined,
   });
   await app.open();
   await until(() => app.doc.querySelector('.fn-markdown img[src^="data:image/png"]'));
@@ -1051,7 +1052,7 @@ const PDF_URL = `data:application/pdf;base64,${Buffer.from('%PDF-1.4\n%%EOF\n').
 test('a PDF reads in its own frame, and pdf.js loads only once a note shows one', async (t) => {
   const source = 'fieldnotes://asset/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const app = await ui(t, { note: { content: `Tickets\n\n![Hotel booking.pdf](${source})` },
-    invoke: (sub) => sub.startsWith('/asset') ? { source, data_url: PDF_URL } : undefined });
+    invoke: (sub) => sub === '/assets' ? { images: [{ source, data_url: PDF_URL }], rest: [] } : undefined });
   assert.equal(app.doc.querySelector('script[src="pdf.js"]'), null);
   await app.open();
   await until(() => app.doc.querySelector('.fn-markdown figure.fn-pdf'));
@@ -1139,12 +1140,28 @@ test('an image a co-editor inserts is fetched and shown without reopening the no
   const source = 'fieldnotes://asset/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const peers = [{ client_id: 42, user_id: 2, name: 'Sherwin', color: '#ec4899', cursor: null }];
   const app = await ui(t, { note: { content: 'Map' }, peers,
-    invoke: (sub) => sub.startsWith('/asset') ? { source, data_url: 'data:image/png;base64,cG5n' } : undefined });
+    invoke: (sub) => sub === '/assets' ? { images: [{ source, data_url: 'data:image/png;base64,cG5n' }], rest: [] } : undefined });
   const { content, view } = await openEditor(app);
   app.remote((doc) => doc.getText('content').insert(3, `\n![map](${source})`));
   await until(() => view.state.doc.toString().includes(source));
   await until(() => content.querySelector('img.fn-md-image[src^="data:image/png"]'));
   assert.equal(app.calls.filter((call) => call.sub.startsWith('/asset')).length, 1);
+});
+
+test('a note full of images loads them in batches, and a batch refused while Fieldnotes is busy is asked again', async (t) => {
+  const sources = Array.from({ length: 10 }, (_, index) => `fieldnotes://asset/${String(index).repeat(8)}-0000-4000-8000-000000000000`);
+  let asked = 0;
+  const app = await ui(t, { note: { content: sources.map((source, index) => `![photo ${index}](${source})`).join('\n\n') },
+    invoke: (sub, init) => {
+      if (sub !== '/assets') return undefined;
+      // The preview takes two batches; the first batch of the opened note finds Fieldnotes busy.
+      if ((asked += 1) === 3) return { error: 'Fieldnotes is busy. Try again in a moment.', status: 503 };
+      return { images: init.body.sources.map((source) => ({ source, data_url: 'data:image/png;base64,cG5n' })), rest: [] };
+    } });
+  await app.open();
+  await until(() => app.doc.querySelectorAll('.fn-markdown img[src^="data:image/png"]').length === 10);
+  const batches = app.calls.filter((call) => call.sub === "/assets").map((call) => call.body.sources.length);
+  assert.deepEqual(batches, [8, 2, 8, 8, 2]);
 });
 
 test('an image pasted while another action is still running is uploaded, not dropped', async (t) => {
@@ -1169,8 +1186,9 @@ test('an image pasted while another action is still running is uploaded, not dro
 test('an image that cannot load says why instead of showing an empty frame', async (t) => {
   const source = 'https://images.example.test/view.jpg';
   const app = await ui(t, { note: { content: `![view](${source})` }, invoke: (sub) => {
-    if (sub.startsWith('/asset')) {
-      return { error: 'Image host is not allowed. Paste the image itself, or ask an admin to allow this host.', status: 403 };
+    if (sub === '/assets') {
+      const error = 'Image host is not allowed. Paste the image itself, or ask an admin to allow this host.';
+      return { images: [{ source, error, template: error, status: 403 }], rest: [] };
     }
   } });
   await app.open();

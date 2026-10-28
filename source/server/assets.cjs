@@ -117,7 +117,16 @@ function createAssets({ fail }) {
     return row || fail(404, 'This file was deleted.');
   }
 
-  return { referenceOps, track, sweep, upload, read };
+  // Several uploads in one query, keyed by source; a source that is no upload, or one since deleted, is left out.
+  async function readMany(ctx, sources) {
+    const ids = sources.map((source) => ASSET_SOURCE.exec(source)?.[1]).filter(Boolean);
+    if (!ids.length) return new Map();
+    const rows = await ctx.db.query(`SELECT id, mimetype, size, content_base64 FROM note_assets
+      WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids));
+    return new Map(rows.map((row) => [`fieldnotes://asset/${row.id}`, row]));
+  }
+
+  return { referenceOps, track, sweep, upload, read, readMany, isUpload: (source) => ASSET_SOURCE.test(source) };
 }
 
 module.exports = { createAssets };

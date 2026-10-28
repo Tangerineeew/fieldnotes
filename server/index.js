@@ -30,6 +30,7 @@ var require_limits = __commonJS({
       uploadPartChars: 9e4,
       maxImageBytes: 4194304,
       maxPdfBytes: 10485760,
+      assetBatch: 8,
       maxContentChars: 2e5,
       maxContentBytes: 5e5,
       maxPropertiesBytes: 32e3,
@@ -193,7 +194,14 @@ var require_assets = __commonJS({
         const [row] = await ctx.db.query("SELECT mimetype, size, content_base64 FROM note_assets WHERE id = ?", match[1]);
         return row || fail(404, "This file was deleted.");
       }
-      return { referenceOps, track, sweep, upload, read };
+      async function readMany(ctx, sources) {
+        const ids = sources.map((source) => ASSET_SOURCE.exec(source)?.[1]).filter(Boolean);
+        if (!ids.length) return /* @__PURE__ */ new Map();
+        const rows = await ctx.db.query(`SELECT id, mimetype, size, content_base64 FROM note_assets
+      WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids));
+        return new Map(rows.map((row) => [`fieldnotes://asset/${row.id}`, row]));
+      }
+      return { referenceOps, track, sweep, upload, read, readMany, isUpload: (source) => ASSET_SOURCE.test(source) };
     }
     module2.exports = { createAssets };
   }
@@ -9780,6 +9788,7 @@ var require_service = __commonJS({
     var https = require("node:https");
     var { isIP } = require("node:net");
     var {
+      assetBatch,
       maxImageBytes,
       maxPdfBytes,
       maxContentChars,
@@ -10603,21 +10612,21 @@ var require_service = __commonJS({
       if (changes.some((change) => change.role === "none")) collab.forget(note.id);
       return { saved: changes.length };
     }
-    async function noteForAsset(ctx, userId, noteId, tripId, source, versionId) {
+    async function shownImages(ctx, userId, noteId, tripId, versionId) {
       if (versionId) {
         const version = tripId === null ? await history.read(ctx, userId, noteId, versionId) : await snapshotHistory.read(ctx, userId, snapshotKey(tripId, id2(noteId)), versionId);
-        if (!imageSources(version.content).includes(source)) fail(404, "Image not found.");
-        return version;
+        return new Set(imageSources(version.content));
       }
       const note = tripId === null ? await readable(ctx, userId, noteId) : (await tripNotes(ctx, await checkTrip(ctx, tripId))).notes.find((item) => item.id === id2(noteId) && !item.unavailable);
-      if (!note || !imageSources(note.content).includes(source)) fail(404, "Image not found.");
-      return note;
+      if (!note) fail(404, "Image not found.");
+      return new Set(imageSources(note.content));
     }
+    var assetTrip = (input) => input.trip_id === void 0 || input.trip_id === null || input.trip_id === "" ? null : number(input.trip_id);
     async function asset(ctx, userId, input) {
       const noteId = id2(input.note_id);
       const source = text(input.source, 2048, "image source");
-      const tripId = input.trip_id === void 0 || input.trip_id === null || input.trip_id === "" ? null : number(input.trip_id);
-      await noteForAsset(ctx, userId, noteId, tripId, source, input.version_id);
+      const tripId = assetTrip(input);
+      if (!(await shownImages(ctx, userId, noteId, tripId, input.version_id)).has(source)) fail(404, "Image not found.");
       if (tripId !== null) {
         const [snapshot2] = await ctx.db.query(`SELECT mimetype, size, content_base64 FROM snapshot_assets
       WHERE trip_id = ? AND note_id = ? AND source = ?`, tripId, noteId, source);
@@ -10628,9 +10637,38 @@ var require_service = __commonJS({
       if (/^https:\/\//i.test(source)) return { source, ...await fetchExternalImage(source) };
       fail(400, "Unsupported image source.");
     }
+    var ASSET_BATCH_CHARS = 4 * 1024 * 1024;
+    async function assets(ctx, userId, input) {
+      if (!Array.isArray(input.sources) || !input.sources.length || input.sources.length > assetBatch) {
+        fail(400, "Invalid value: {field}.", { field: "image source" });
+      }
+      const sources = [...new Set(input.sources.map((source) => text(source, 2048, "image source")))];
+      const noteId = id2(input.note_id);
+      const tripId = assetTrip(input);
+      const shown = await shownImages(ctx, userId, noteId, tripId, input.version_id);
+      const kept = tripId === null ? [] : await ctx.db.query(`SELECT source, mimetype, size, content_base64 FROM snapshot_assets
+    WHERE trip_id = ? AND note_id = ? AND source IN (SELECT value FROM json_each(?))`, tripId, noteId, JSON.stringify(sources));
+      const snapshots = new Map(kept.map((row) => [row.source, row]));
+      const uploaded = await uploads.readMany(ctx, sources.filter((source) => shown.has(source) && !snapshots.has(source)));
+      const images = [];
+      let chars = 0;
+      for (const [index, source] of sources.entries()) {
+        if (images.length && chars >= ASSET_BATCH_CHARS) return { images, rest: sources.slice(index) };
+        try {
+          if (!shown.has(source)) fail(404, "Image not found.");
+          const image = snapshots.has(source) ? imageData(snapshots.get(source)) : uploaded.has(source) ? imageData(uploaded.get(source), "uploaded image") : uploads.isUpload(source) ? fail(404, "This file was deleted.") : /^https:\/\//i.test(source) ? await fetchExternalImage(source) : fail(400, "Unsupported image source.");
+          images.push({ source, data_url: image.data_url });
+          chars += image.data_url.length;
+        } catch (error) {
+          if (!(error instanceof Problem)) throw error;
+          images.push({ source, error: error.message, status: error.status, template: error.template, params: error.params });
+        }
+      }
+      return { images, rest: [] };
+    }
     async function captureSnapshotAssets(ctx, sources, keptBytes = 0, tripId = null) {
       if (sources.length > maxSnapshotAssets) fail(400, "A snapshot can include at most {count} images.", { count: maxSnapshotAssets });
-      const assets = [];
+      const assets2 = [];
       let totalBytes = keptBytes;
       for (const source of sources) {
         const file = tripFileSource(source);
@@ -10649,11 +10687,11 @@ var require_service = __commonJS({
         if (totalBytes > maxSnapshotAssetsBytes) {
           fail(400, "Snapshot images exceed the {size} MB limit.", { size: maxSnapshotAssetsBytes / 1024 / 1024 });
         }
-        assets.push({ source, ...image });
+        assets2.push({ source, ...image });
       }
-      return assets;
+      return assets2;
     }
-    var freezeOps = (tripId, note, assets, capturedAt) => [
+    var freezeOps = (tripId, note, assets2, capturedAt) => [
       { sql: `INSERT INTO trip_note_snapshots (trip_id, note_id, title, content, tags, properties, icon, version, updated_at, visibility,
     captured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args: [
         tripId,
@@ -10668,9 +10706,9 @@ var require_service = __commonJS({
         note.visibility,
         capturedAt
       ] },
-      ...copyOps(tripId, note.id, assets)
+      ...copyOps(tripId, note.id, assets2)
     ];
-    var copyOps = (tripId, noteId, assets, guard = null) => assets.map((copy2) => ({
+    var copyOps = (tripId, noteId, assets2, guard = null) => assets2.map((copy2) => ({
       sql: `INSERT OR REPLACE INTO snapshot_assets (trip_id, note_id, source, mimetype, size, content_base64)
     SELECT ?, ?, ?, ?, ?, ?${guard ? ` WHERE ${guard.sql}` : ""}`,
       args: [tripId, noteId, copy2.source, copy2.mimetype, copy2.size, copy2.content_base64, ...guard?.args || []]
@@ -10842,9 +10880,9 @@ var require_service = __commonJS({
           fail(403, "Only people who can read this note in Fieldnotes can turn it into a snapshot.");
         throw error;
       });
-      const assets = await captureSnapshotAssets(ctx, imageSources(note.content));
+      const assets2 = await captureSnapshotAssets(ctx, imageSources(note.content));
       await ctx.db.tx([
-        ...freezeOps(trip.id, note, assets, (/* @__PURE__ */ new Date()).toISOString()),
+        ...freezeOps(trip.id, note, assets2, (/* @__PURE__ */ new Date()).toISOString()),
         {
           sql: "UPDATE trip_note_links SET mode = 'snapshot' WHERE trip_id = ? AND note_id = ? AND mode = 'live' AND removed_at IS NULL",
           args: [trip.id, note.id]
@@ -10970,6 +11008,7 @@ var require_service = __commonJS({
         return restoreSnapshot(ctx, actorId, key, input);
       }
       if (input.action === "asset") return asset(ctx, input.version_id ? Number(sender) : null, input);
+      if (input.action === "assets") return assets(ctx, input.version_id ? Number(sender) : null, input);
       const trip = await checkTrip(ctx, tripId);
       if (["folders", "folder_create", "folder_icon", "folder_archive", "folder_move", "folder_move_note"].includes(input.action)) {
         return tripFolderAction(input, ctx, trip);
@@ -11693,6 +11732,7 @@ ${propertyText(note.properties)}`);
       if (action === "version") return history.read(ctx, userId, query.note_id, query.id);
       if (action === "restore") return restoreVersion(ctx, userId, body);
       if (action === "asset") return asset(ctx, userId, query);
+      if (action === "assets") return assets(ctx, userId, body);
       if (action === "upload") return uploads.upload(ctx, userId, body);
       if (action === "collaborators") return collaborators(ctx, userId, query.note_id);
       if (action === "collaborator") return collaboratorAction(body, ctx, userId);
@@ -11901,7 +11941,7 @@ ${propertyText(note.properties)}`);
         return json(200, await fn());
       } catch (error) {
         console.error("[Fieldnotes] request failed:", error instanceof Error ? error.stack : String(error));
-        const problem = error instanceof Problem ? error : /RESOURCE_FORBIDDEN|PERMISSION_DENIED/.test(error?.message) ? new Problem(403, "You do not have permission to do this.") : error?.status >= 400 && error.status < 500 ? new Problem(error.status, String(error.message)) : null;
+        const problem = error instanceof Problem ? error : /RESOURCE_FORBIDDEN|PERMISSION_DENIED/.test(error?.message) ? new Problem(403, "You do not have permission to do this.") : /rate limit exceeded/i.test(error?.message) ? new Problem(503, "Fieldnotes is busy. Try again in a moment.") : error?.status >= 400 && error.status < 500 ? new Problem(error.status, String(error.message)) : null;
         if (!problem) return json(500, { error: "Request failed. Try again or check the plugin logs." });
         return json(200, { error: problem.message, status: problem.status, template: problem.template, params: problem.params });
       }
@@ -11943,7 +11983,8 @@ var endpoints = [
   ["POST", "/note-settings", "note_settings"],
   ["POST", "/part", "part"],
   ["GET", "/deleted", "deleted"],
-  ["POST", "/deleted", "deleted_action"]
+  ["POST", "/deleted", "deleted_action"],
+  ["POST", "/assets", "assets"]
 ];
 module.exports = definePlugin({
   onLoad: initialize,

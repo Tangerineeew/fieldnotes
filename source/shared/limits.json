@@ -2,6 +2,7 @@
   "uploadPartChars": 90000,
   "maxImageBytes": 4194304,
   "maxPdfBytes": 10485760,
+  "assetBatch": 8,
   "maxContentChars": 200000,
   "maxContentBytes": 500000,
   "maxPropertiesBytes": 32000,

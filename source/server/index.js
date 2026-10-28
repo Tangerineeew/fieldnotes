@@ -13,7 +13,7 @@ const endpoints = [
   ['POST', '/link-grant', 'link_grant'], ['POST', '/link-mentions', 'link_mentions'],
   ['GET', '/history', 'history'], ['GET', '/version', 'version'], ['POST', '/restore', 'restore'],
   ['POST', '/trip', 'trip'], ['POST', '/collab', 'collab'], ['POST', '/note-settings', 'note_settings'], ['POST', '/part', 'part'],
-  ['GET', '/deleted', 'deleted'], ['POST', '/deleted', 'deleted_action'],
+  ['GET', '/deleted', 'deleted'], ['POST', '/deleted', 'deleted_action'], ['POST', '/assets', 'assets'],
 ];
 
 module.exports = definePlugin({
