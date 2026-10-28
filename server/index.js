@@ -29,13 +29,50 @@ var require_limits = __commonJS({
     module2.exports = {
       uploadPartChars: 9e4,
       maxImageBytes: 4194304,
-      maxContentChars: 24e3,
-      maxContentBytes: 4e4,
+      maxPdfBytes: 10485760,
+      maxContentChars: 2e5,
+      maxContentBytes: 5e5,
       maxPropertiesBytes: 32e3,
       maxCommentChars: 2e3,
       maxQuoteChars: 500,
-      quoteContextChars: 32
+      quoteContextChars: 32,
+      bodyLimitBytes: 9e4,
+      bodyPartChars: 72e3,
+      maxBodyParts: 24,
+      maxTitleChars: 160,
+      maxIconChars: 15e4,
+      maxProperties: 30,
+      maxPropertyOptions: 30,
+      maxPropertyNameChars: 40,
+      maxPropertyTextChars: 2e3,
+      maxChecklistItems: 50,
+      propertyColors: 8
     };
+  }
+});
+
+// server/common.cjs
+var require_common = __commonJS({
+  "server/common.cjs"(exports2, module2) {
+    "use strict";
+    var UUID = "[0-9a-f-]{36}";
+    var parseList = (json) => {
+      try {
+        const parsed = JSON.parse(json);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    };
+    var names = /* @__PURE__ */ new Map();
+    async function personName(ctx, userId) {
+      if (!names.has(userId)) {
+        const user = await ctx.users.getById(userId).catch(() => null);
+        names.set(userId, user?.display_name || user?.username || `#${userId}`);
+      }
+      return names.get(userId);
+    }
+    module2.exports = { UUID, parseList, personName };
   }
 });
 
@@ -44,11 +81,13 @@ var require_assets = __commonJS({
   "server/assets.cjs"(exports2, module2) {
     "use strict";
     var { randomUUID } = require("node:crypto");
-    var { uploadPartChars, maxImageBytes } = require_limits();
-    var ASSET_SOURCE = /^fieldnotes:\/\/asset\/([0-9a-f-]{36})$/;
-    var ASSET_REFERENCE = /fieldnotes:\/\/asset\/([0-9a-f-]{36})/g;
-    var MAX_PARTS = Math.ceil(Math.ceil(maxImageBytes / 3) * 4 / uploadPartChars);
-    var MAX_STORED_IMAGE_BYTES = 256 * 1024 * 1024 / 2 * 3 / 4;
+    var { uploadPartChars, maxImageBytes, maxPdfBytes } = require_limits();
+    var { UUID } = require_common();
+    var ASSET_SOURCE = new RegExp(`^fieldnotes://asset/(${UUID})$`);
+    var ASSET_REFERENCE = new RegExp(`fieldnotes://asset/(${UUID})`, "g");
+    var UPLOAD_ID = new RegExp(`^${UUID}$`);
+    var MAX_PARTS = Math.ceil(Math.ceil(Math.max(maxImageBytes, maxPdfBytes) / 3) * 4 / uploadPartChars);
+    var MAX_STORED_BYTES = 256 * 1024 * 1024 / 2 * 3 / 4;
     var UPLOAD_TTL_MS = 60 * 60 * 1e3;
     var RELEASE_GRACE_MS = 10 * 60 * 1e3;
     var UNUSED_GRACE_MS = 24 * 60 * 60 * 1e3;
@@ -57,13 +96,14 @@ var require_assets = __commonJS({
       ["image/jpeg", (bytes) => bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255],
       ["image/gif", (bytes) => /^GIF8[79]a$/.test(bytes.subarray(0, 6).toString("latin1"))],
       ["image/webp", (bytes) => bytes.subarray(0, 4).toString("latin1") === "RIFF" && bytes.subarray(8, 12).toString("latin1") === "WEBP"],
-      ["image/avif", (bytes) => bytes.subarray(4, 8).toString("latin1") === "ftyp" && /^avi[fs]$/.test(bytes.subarray(8, 12).toString("latin1"))]
+      ["image/avif", (bytes) => bytes.subarray(4, 8).toString("latin1") === "ftyp" && /^avi[fs]$/.test(bytes.subarray(8, 12).toString("latin1"))],
+      ["application/pdf", (bytes) => bytes.subarray(0, 5).toString("latin1") === "%PDF-"]
     ];
     var assetIds = (content) => new Set([...String(content).matchAll(ASSET_REFERENCE)].map((match) => match[1]));
     var sniff = (bytes) => SIGNATURES.find(([, matches]) => matches(bytes))?.[0] || null;
     function createAssets({ fail }) {
       const uploadId = (value) => {
-        if (typeof value !== "string" || !/^[0-9a-f-]{36}$/.test(value)) fail(400, "Invalid upload.");
+        if (typeof value !== "string" || !UPLOAD_ID.test(value)) fail(400, "Invalid upload.");
         return value;
       };
       function referenceOps(before, after) {
@@ -92,7 +132,8 @@ var require_assets = __commonJS({
         const now = Date.now();
         return ctx.db.exec(
           `DELETE FROM note_assets WHERE (CASE WHEN released_at IS NULL THEN created_at < ? ELSE released_at < ? END)
-      AND NOT EXISTS (SELECT 1 FROM notes WHERE archived = 0 AND instr(content, 'fieldnotes://asset/' || note_assets.id) > 0)`,
+      AND NOT EXISTS (SELECT 1 FROM notes WHERE instr(content, 'fieldnotes://asset/' || note_assets.id) > 0)
+      AND NOT EXISTS (SELECT 1 FROM note_versions WHERE instr(content, 'fieldnotes://asset/' || note_assets.id) > 0)`,
           new Date(now - UNUSED_GRACE_MS).toISOString(),
           new Date(now - RELEASE_GRACE_MS).toISOString()
         );
@@ -101,7 +142,7 @@ var require_assets = __commonJS({
         const [{ total }] = await ctx.db.query(`SELECT (SELECT COALESCE(SUM(size), 0) FROM note_assets)
       + (SELECT COALESCE(SUM(size), 0) FROM snapshot_assets)
       + (SELECT COALESCE(SUM(length(data)), 0) * 3 / 4 FROM asset_uploads WHERE id != ?) AS total`, uploadId2);
-        if (total + adding > MAX_STORED_IMAGE_BYTES) fail(413, "Fieldnotes image storage is full. Remove unused images first.");
+        if (total + adding > MAX_STORED_BYTES) fail(413, "Fieldnotes storage is full. Remove unused images or PDFs first.");
       }
       async function upload(ctx, userId, input) {
         const part = Number(input.part);
@@ -129,8 +170,11 @@ var require_assets = __commonJS({
           return { upload_id: id2 };
         }
         const bytes = Buffer.from([...stored.map((row) => row.data), data].join(""), "base64");
-        if (bytes.length > maxImageBytes) fail(413, "Images must be {size} MB or smaller.", { size: maxImageBytes / 1024 / 1024 });
-        const mimetype = sniff(bytes) || fail(415, "Upload a PNG, JPEG, GIF, WebP or AVIF image.");
+        const mimetype = sniff(bytes) || fail(415, "Upload a PNG, JPEG, GIF, WebP or AVIF image, or a PDF.");
+        if (mimetype === "application/pdf" && bytes.length > maxPdfBytes)
+          fail(413, "PDFs must be {size} MB or smaller.", { size: maxPdfBytes / 1024 / 1024 });
+        if (mimetype !== "application/pdf" && bytes.length > maxImageBytes)
+          fail(413, "Images must be {size} MB or smaller.", { size: maxImageBytes / 1024 / 1024 });
         await sweep(ctx);
         await reserve(ctx, id2, bytes.length);
         const assetId = randomUUID();
@@ -147,11 +191,239 @@ var require_assets = __commonJS({
         const match = ASSET_SOURCE.exec(source);
         if (!match) return null;
         const [row] = await ctx.db.query("SELECT mimetype, size, content_base64 FROM note_assets WHERE id = ?", match[1]);
-        return row || fail(404, "This image was deleted.");
+        return row || fail(404, "This file was deleted.");
       }
       return { referenceOps, track, sweep, upload, read };
     }
     module2.exports = { createAssets };
+  }
+});
+
+// server/search.cjs
+var require_search = __commonJS({
+  "server/search.cjs"(exports2, module2) {
+    "use strict";
+    var { UUID } = require_common();
+    var SNIPPET_CHARS = 90;
+    var LEAD_CHARS = 12;
+    var LEADING_ID = new RegExp(`^${UUID}`, "i");
+    var readable = (content) => String(content).replace(/!?\[\[([^\]|\n]+)(?:\|([^\]\n]*))?\]\]/g, (_match, target, label) => label || (LEADING_ID.test(target) ? "" : target)).replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/<[^>]+>/g, "");
+    function snippetOf(text, term) {
+      const at = text.toLocaleLowerCase().indexOf(term);
+      if (at < 0) return null;
+      const start = Math.max(0, at - LEAD_CHARS);
+      const end = Math.min(text.length, start + SNIPPET_CHARS);
+      const passage = text.slice(start, end).replace(/^#+\s+|[*_`~>]|^\s*[-+]\s+(\[[ xX]\]\s+)?/gm, "").replace(/\s+/g, " ").trim();
+      return `${start > 0 ? "\u2026" : ""}${passage}${end < text.length ? "\u2026" : ""}`;
+    }
+    function rank(query, note, extra = "") {
+      const terms = String(query).toLocaleLowerCase().split(/\s+/).filter(Boolean);
+      if (!terms.length) return { score: 0, snippet: null };
+      const title = note.title.toLocaleLowerCase();
+      const body = readable(note.content);
+      const lowered = body.toLocaleLowerCase();
+      const headings = (lowered.match(/^#{1,6}\s+.*$/gm) || []).join("\n");
+      const fields = extra.toLocaleLowerCase();
+      let score = 0;
+      let snippet = null;
+      for (const term of terms) {
+        if (title.startsWith(term)) score += 60;
+        else if (title.split(/[\s\p{P}]+/u).some((word) => word.startsWith(term))) score += 45;
+        else if (title.includes(term)) score += 30;
+        else if (headings.includes(term)) score += 15;
+        else if (fields.includes(term)) score += 10;
+        else if (lowered.includes(term)) score += 5;
+        else return null;
+        if (!title.includes(term) && !snippet) snippet = snippetOf(body, term);
+      }
+      const phrase = terms.join(" ");
+      if (title === phrase) score += 100;
+      else if (terms.length > 1 && title.includes(phrase)) score += 30;
+      return { score, snippet };
+    }
+    module2.exports = { rank };
+  }
+});
+
+// server/trek-objects.cjs
+var require_trek_objects = __commonJS({
+  "server/trek-objects.cjs"(exports2, module2) {
+    "use strict";
+    var REF = /^(place|booking|day|stay)\/(\d{1,12})$/;
+    var MAX_REFS = 200;
+    var MAX_STOPS = 40;
+    var clip = (value, size2) => {
+      const flat = String(value ?? "").replace(/\s+/g, " ").trim();
+      return flat.length > size2 ? `${flat.slice(0, size2 - 1)}\u2026` : flat;
+    };
+    var rows = (value) => Array.isArray(value) ? value : [];
+    var dayOf = (day) => day ? { number: Number(day.day_number) || null, date: day.date || null } : null;
+    var plan = (tripId, param, id2) => `/trips/${tripId}?tab=plan&${param}=${id2}`;
+    var clock = (value) => /^\d{2}:\d{2}/.exec(String(value ?? ""))?.[0] || null;
+    var colour = (value) => /^#[0-9a-f]{3,8}$/i.test(String(value ?? "")) ? String(value) : null;
+    var coordinate = (value) => value === null || value === void 0 || value === "" || !Number.isFinite(Number(value)) ? null : Number(value);
+    function metadata(booking) {
+      if (booking.metadata && typeof booking.metadata === "object") return booking.metadata;
+      try {
+        return JSON.parse(booking.metadata || "{}") || {};
+      } catch {
+        return {};
+      }
+    }
+    function mapUrl({ name, lat, lng, placeId, address }) {
+      const point = coordinate(lat) !== null && coordinate(lng) !== null ? `${coordinate(lat)},${coordinate(lng)}` : "";
+      const query = placeId ? clip(name, 160) || point : point || clip(address, 200);
+      if (!query) return null;
+      const params2 = new URLSearchParams({ api: "1", query });
+      if (placeId) params2.set("query_place_id", String(placeId));
+      return `https://www.google.com/maps/search/?${params2}`;
+    }
+    var categoryOf = (place) => {
+      const category = place?.category && typeof place.category === "object" ? place.category : place?.category_name ? { name: place.category_name, icon: place.category_icon, color: place.category_color } : null;
+      return category?.name ? { name: clip(category.name, 60), icon: clip(category.icon, 8) || null, color: colour(category.color) } : null;
+    };
+    function parseRefs(refs) {
+      if (!Array.isArray(refs) || refs.length > MAX_REFS) return null;
+      const parsed = refs.map((ref) => REF.exec(String(ref)));
+      return parsed.every(Boolean) ? parsed.map(([ref, kind, id2]) => ({ ref, kind, id: Number(id2) })) : null;
+    }
+    function placeCard(tripId, place, scheduled) {
+      const slot = scheduled.get(Number(place.id));
+      return {
+        ref: `place/${place.id}`,
+        kind: "place",
+        name: clip(place.name, 160),
+        category: categoryOf(place),
+        day: slot?.day || null,
+        time: slot?.time || clock(place.place_time),
+        map: mapUrl({ name: place.name, lat: place.lat, lng: place.lng, placeId: place.google_place_id, address: place.address }),
+        link: plan(tripId, "place", place.id)
+      };
+    }
+    function bookingCard(tripId, booking, days) {
+      const meta = metadata(booking);
+      const endpoint = (role) => {
+        const found = rows(booking.endpoints).find((point) => point.role === role);
+        const code = clip(found?.code || meta[role === "from" ? "departure_airport" : "arrival_airport"], 8) || null;
+        return found ? {
+          name: clip(found.name, 120),
+          code,
+          time: clock(found.local_time),
+          date: found.local_date || null,
+          zone: clip(found.timezone || meta[role === "from" ? "departure_timezone" : "arrival_timezone"], 60) || null
+        } : null;
+      };
+      return {
+        ref: `booking/${booking.id}`,
+        kind: "booking",
+        name: clip(booking.title, 160),
+        type: String(booking.type || "other"),
+        status: booking.status === "pending" ? "pending" : "confirmed",
+        start: booking.reservation_time || null,
+        end: booking.reservation_end_time || null,
+        from: endpoint("from"),
+        to: endpoint("to"),
+        number: clip(meta.flight_number || meta.train_number, 40) || null,
+        carrier: clip(meta.airline, 60) || null,
+        seat: clip(meta.seat, 40) || null,
+        location: clip(booking.location || booking.place_name, 200) || null,
+        day: dayOf(days.get(Number(booking.day_id))) || (booking.day_number ? { number: Number(booking.day_number), date: null } : null),
+        map: booking.location ? mapUrl({ address: booking.location }) : null,
+        link: plan(tripId, "booking", booking.id)
+      };
+    }
+    function dayCard(tripId, day, bookings, stays) {
+      const stops = rows(day.assignments).map((assignment) => ({
+        at: Number(assignment.order_index ?? 0),
+        name: clip(assignment.place?.name, 80),
+        time: clock(assignment.assignment_time || assignment.place?.place_time),
+        icon: categoryOf(assignment.place)?.icon || null,
+        type: "place"
+      }));
+      for (const booking of bookings) {
+        const elsewhere = Number(booking.day_id) !== Number(day.id) || booking.assignment_id || booking.accommodation_id;
+        if (elsewhere || booking.type === "hotel") continue;
+        const at = booking.day_positions?.[day.id] ?? booking.day_plan_position;
+        stops.push({
+          at: at === null || at === void 0 ? Infinity : Number(at),
+          name: clip(booking.title, 80),
+          time: clock(String(booking.reservation_time || "").split("T")[1]),
+          icon: null,
+          type: String(booking.type || "other")
+        });
+      }
+      const ordered = stops.filter((stop) => stop.name).sort((a, b) => a.at - b.at || String(a.time).localeCompare(String(b.time)));
+      const number = Number(day.day_number);
+      const night = stays.find((stay) => stay.from?.number <= number && number < stay.to?.number);
+      return {
+        ref: `day/${day.id}`,
+        kind: "day",
+        name: clip(day.title, 160),
+        ...dayOf(day),
+        stops: ordered.slice(0, MAX_STOPS).map(({ at: _at, ...stop }) => stop),
+        more: Math.max(0, ordered.length - MAX_STOPS),
+        stay: night?.name || null,
+        link: plan(tripId, "day", day.id)
+      };
+    }
+    function stayCard(tripId, stay, days) {
+      return {
+        ref: `stay/${stay.id}`,
+        kind: "stay",
+        name: clip(stay.place_name || stay.reservation_title, 160),
+        address: clip(stay.place_address, 200) || null,
+        check_in: clock(stay.check_in),
+        check_out: clock(stay.check_out),
+        from: dayOf(days.get(Number(stay.start_day_id))),
+        to: dayOf(days.get(Number(stay.end_day_id))),
+        map: mapUrl({ name: stay.place_name, lat: stay.place_lat, lng: stay.place_lng, address: stay.place_address }),
+        link: stay.place_id ? plan(tripId, "place", stay.place_id) : plan(tripId, "day", stay.start_day_id)
+      };
+    }
+    async function load(ctx, tripId, kinds) {
+      const wanted = (kind) => kinds.has(kind);
+      const [places, bookings, dayRows, stays] = await Promise.all([
+        wanted("place") ? ctx.trips.getPlaces(tripId) : [],
+        wanted("booking") || wanted("day") ? ctx.trips.getReservations(tripId) : [],
+        ctx.trips.getDays(tripId),
+        wanted("stay") || wanted("day") ? ctx.trips.getAccommodations(tripId) : []
+      ]);
+      const ordered = rows(dayRows).toSorted((a, b) => (a.day_number ?? 0) - (b.day_number ?? 0));
+      const days = new Map(ordered.map((day) => [Number(day.id), day]));
+      const scheduled = /* @__PURE__ */ new Map();
+      for (const day of days.values()) {
+        for (const assignment of rows(day.assignments)) {
+          const placeId = Number(assignment.place_id ?? assignment.place?.id);
+          if (!scheduled.has(placeId)) scheduled.set(placeId, { day: dayOf(day), time: clock(assignment.assignment_time) });
+        }
+      }
+      return { places: rows(places), bookings: rows(bookings), days, stays: rows(stays), scheduled };
+    }
+    function cardsOf(tripId, data, kinds, listing = false) {
+      const stays = data.stays.map((stay) => stayCard(tripId, stay, data.days));
+      return [
+        ...kinds.has("day") ? [...data.days.values()].map((day) => dayCard(tripId, day, data.bookings, stays)) : [],
+        ...kinds.has("stay") ? stays : [],
+        ...kinds.has("booking") ? data.bookings.filter((booking) => !listing || !booking.accommodation_id).map((booking) => bookingCard(tripId, booking, data.days)) : [],
+        ...data.places.map((place) => placeCard(tripId, place, data.scheduled))
+      ];
+    }
+    function createTrekObjects({ fail }) {
+      async function resolve(ctx, tripId, refs) {
+        const parsed = parseRefs(refs);
+        if (!parsed) fail(400, "Invalid trip item reference.");
+        if (!parsed.length) return { objects: [] };
+        const wanted = new Set(parsed.map((item) => item.ref));
+        const kinds = new Set(parsed.map((item) => item.kind));
+        return { objects: cardsOf(tripId, await load(ctx, tripId, kinds), kinds).filter((card) => wanted.has(card.ref)) };
+      }
+      async function list(ctx, tripId) {
+        const kinds = /* @__PURE__ */ new Set(["place", "booking", "day", "stay"]);
+        return { objects: cardsOf(tripId, await load(ctx, tripId, kinds), kinds, true) };
+      }
+      return { list, resolve };
+    }
+    module2.exports = { createTrekObjects };
   }
 });
 
@@ -9050,15 +9322,139 @@ var init_yjs = __esm({
   }
 });
 
+// server/history.cjs
+var require_history = __commonJS({
+  "server/history.cjs"(exports2, module2) {
+    "use strict";
+    var { randomUUID } = require("node:crypto");
+    var { parseList, personName } = require_common();
+    var QUIET_MS = 10 * 60 * 1e3;
+    var STRETCH_MS = 60 * 60 * 1e3;
+    var DAY_MS = 24 * 60 * 60 * 1e3;
+    var PER_NOTE = 100;
+    var BUDGET_BYTES = 32 * 1024 * 1024;
+    var PRUNE_EVERY_MS = 10 * 60 * 1e3;
+    var iso = (ms) => new Date(ms).toISOString();
+    var VERSION_BYTES = `length(CAST(title AS BLOB)) + length(CAST(content AS BLOB)) + length(CAST(properties AS BLOB))
+  + COALESCE(length(CAST(icon AS BLOB)), 0)`;
+    var NOTES = { table: "notes", match: "id = ?", args: (key) => [key], live: " AND archived = 0" };
+    var snapshotKey = (tripId, noteId) => `trip:${tripId}:${noteId}`;
+    var snapshotParts = (key) => {
+      const [, tripId, noteId] = key.split(":");
+      return { tripId: Number(tripId), noteId };
+    };
+    var snapshotKeySql = (alias = "") => `'trip:' || ${alias}trip_id || ':' || ${alias}note_id`;
+    var SNAPSHOTS = {
+      table: "trip_note_snapshots",
+      match: "trip_id = ? AND note_id = ?",
+      live: "",
+      args: (key) => {
+        const { tripId, noteId } = snapshotParts(key);
+        return [tripId, noteId];
+      }
+    };
+    function createHistory({ fail, editable, source = NOTES }) {
+      let prunedAt = 0;
+      const { table, match, args: where, live } = source;
+      function beforeWrite(noteId, userId, { force = false, version } = {}) {
+        const now = Date.now();
+        const starts = force ? "1" : "(updated_at < ? OR burst_at IS NULL OR burst_at < ?)";
+        const cutoffs = force ? [] : [iso(now - QUIET_MS), iso(now - STRETCH_MS)];
+        const guard = version === void 0 ? "" : " AND version = ?";
+        const expected = version === void 0 ? [] : [version];
+        return [
+          {
+            sql: `INSERT INTO note_versions (id, note_id, edited_at, editors, title, icon, properties, content, bytes)
+      SELECT ?, ?, updated_at, edited_by, title, icon, properties, content, ${VERSION_BYTES} FROM ${table} WHERE ${match}${live}${guard}
+      AND ${starts} AND (content != '' OR properties != '[]')
+      AND NOT EXISTS (SELECT 1 FROM note_versions v WHERE v.note_id = ? AND v.edited_at = ${table}.updated_at)`,
+            args: [randomUUID(), noteId, ...where(noteId), ...expected, ...cutoffs, noteId]
+          },
+          // Who edits since the last version is kept on the note, so the next version can name them.
+          {
+            sql: `UPDATE ${table} SET burst_at = CASE WHEN ${starts} THEN ? ELSE burst_at END,
+      edited_by = CASE WHEN ${starts} THEN json_array(?) WHEN EXISTS (SELECT 1 FROM json_each(edited_by) WHERE value = ?)
+        THEN edited_by ELSE json_insert(edited_by, '$[#]', ?) END WHERE ${match}${guard}`,
+            args: [...cutoffs, iso(now), ...cutoffs, userId, userId, userId, ...where(noteId), ...expected]
+          }
+        ];
+      }
+      async function prune(ctx, always = false) {
+        const now = Date.now();
+        if (!always && now - prunedAt < PRUNE_EVERY_MS) return;
+        prunedAt = now;
+        await ctx.db.tx([
+          { sql: `DELETE FROM note_versions WHERE CASE WHEN note_id LIKE 'trip:%'
+        THEN note_id NOT IN (SELECT ${snapshotKeySql()} FROM trip_note_snapshots)
+        ELSE note_id NOT IN (SELECT id FROM notes) END` },
+          {
+            sql: `DELETE FROM note_versions WHERE id IN (SELECT id FROM (SELECT id, edited_at,
+        ROW_NUMBER() OVER (PARTITION BY note_id, substr(edited_at, 1, 10) ORDER BY edited_at DESC) AS in_day,
+        ROW_NUMBER() OVER (PARTITION BY note_id, strftime('%Y-%W', edited_at) ORDER BY edited_at DESC) AS in_week,
+        ROW_NUMBER() OVER (PARTITION BY note_id ORDER BY edited_at DESC) AS newest FROM note_versions)
+        WHERE edited_at < ? OR newest > ? OR (edited_at < ? AND in_week > 1) OR (edited_at < ? AND in_day > 1))`,
+            args: [iso(now - 365 * DAY_MS), PER_NOTE, iso(now - 30 * DAY_MS), iso(now - DAY_MS)]
+          },
+          { sql: `DELETE FROM note_versions WHERE id IN (SELECT id FROM (SELECT id,
+        SUM(bytes) OVER (ORDER BY edited_at DESC, id DESC) AS kept FROM note_versions)
+        WHERE kept > ?)`, args: [BUDGET_BYTES] }
+        ]);
+      }
+      async function people(ctx, ids) {
+        const names = new Map(await Promise.all(ids.map(async (userId) => [userId, await personName(ctx, userId)])));
+        return (list2) => list2.map((userId) => ({ id: userId, name: names.get(userId) }));
+      }
+      async function list(ctx, userId, noteId) {
+        const note = await editable(ctx, userId, noteId);
+        await prune(ctx, true);
+        const rows = await ctx.db.query(`SELECT id, edited_at, editors, title, icon, length(content) AS length FROM note_versions
+      WHERE note_id = ? ORDER BY edited_at DESC`, note.id);
+        const [row] = await ctx.db.query(`SELECT edited_by FROM ${table} WHERE ${match}`, ...where(note.id));
+        const editing = parseList(row?.edited_by);
+        const named = await people(ctx, [.../* @__PURE__ */ new Set([...editing, ...rows.flatMap((version) => parseList(version.editors))])]);
+        return {
+          current: {
+            edited_at: note.updated_at,
+            editors: named(editing),
+            title: note.title,
+            length: note.content.length
+          },
+          versions: rows.map((version) => ({
+            id: version.id,
+            edited_at: version.edited_at,
+            editors: named(parseList(version.editors)),
+            title: version.title,
+            icon: version.icon && !version.icon.startsWith("data:") ? version.icon : null,
+            length: version.length
+          }))
+        };
+      }
+      async function read(ctx, userId, noteId, versionId) {
+        const note = await editable(ctx, userId, noteId);
+        const [version] = await ctx.db.query(`SELECT id, edited_at, title, icon, properties, content FROM note_versions
+      WHERE id = ? AND note_id = ?`, String(versionId || ""), note.id);
+        if (!version) fail(404, "This version is no longer kept.");
+        return { ...version, properties: parseList(version.properties) };
+      }
+      return { beforeWrite, prune, list, read };
+    }
+    module2.exports = { createHistory, snapshotKey, snapshotParts, snapshotKeySql, NOTES, SNAPSHOTS, VERSION_BYTES };
+  }
+});
+
 // server/collab.cjs
 var require_collab = __commonJS({
   "server/collab.cjs"(exports2, module2) {
     "use strict";
     var Y = (init_yjs(), __toCommonJS(yjs_exports));
-    var { maxPropertiesBytes } = require_limits();
+    var { maxContentBytes, maxPropertiesBytes, maxTitleChars } = require_limits();
+    var { personName } = require_common();
+    var { NOTES } = require_history();
     var PRESENCE_TTL_MS = 1e4;
     var ACCESS_TTL_MS = 1e4;
     var COMPACT_AFTER = 100;
+    var COMPACT_CHARS = 64 * 1024;
+    var maxUpdateChars = Math.ceil((maxContentBytes + maxPropertiesBytes) * 1.5 / 3) * 4;
     var ROOTS = /* @__PURE__ */ new Set(["title", "content", "properties", "meta"]);
     var COLORS = ["#8b5cf6", "#ec4899", "#10b981", "#f59e0b", "#f97316", "#3b82f6", "#14b8a6", "#ef4444"];
     var personColor = (userId) => COLORS[userId % COLORS.length];
@@ -9072,10 +9468,11 @@ var require_collab = __commonJS({
         throw error;
       }
     };
-    function createCollab({ fail, id: id2, editable, noteFields, propertyFields, noteIcon, referenceOps, sweep }) {
+    function createCollab({ fail, id: id2, editable, noteFields, propertyFields, noteIcon, referenceOps, beforeWrite, sweep, source = NOTES }) {
+      const { table, match, args: where, live } = source;
       const accessCache = /* @__PURE__ */ new Map();
-      const nameCache = /* @__PURE__ */ new Map();
       const locks = /* @__PURE__ */ new Map();
+      const written = /* @__PURE__ */ new Map();
       const clientId = (value) => {
         if (!Number.isSafeInteger(value) || value < 0 || value > 4294967295) fail(400, "Invalid collaboration client.");
         return value;
@@ -9094,13 +9491,19 @@ var require_collab = __commonJS({
         accessCache.set(key, { note, until: Date.now() + ACCESS_TTL_MS });
         return note;
       }
-      async function person(ctx, userId) {
-        if (!nameCache.has(userId)) {
-          const user = await ctx.users.getById(userId).catch(() => null);
-          nameCache.set(userId, user?.display_name || user?.username || `#${userId}`);
-        }
-        return { name: nameCache.get(userId), color: personColor(userId) };
-      }
+      const person = async (ctx, userId) => ({ name: await personName(ctx, userId), color: personColor(userId) });
+      const write2 = (noteId, fields, now) => ({ sql: `UPDATE ${table} SET title = COALESCE(?, title), content = ?,
+    properties = COALESCE(?, properties), icon = CASE WHEN ? THEN icon ELSE ? END, updated_at = ?, version = version + 1
+    WHERE ${match}${live}`, args: [
+        fields.title ?? null,
+        fields.content,
+        fields.properties ?? null,
+        fields.icon === void 0 ? 1 : 0,
+        fields.icon ?? null,
+        now,
+        ...where(noteId)
+      ] });
+      const version = async (ctx, noteId) => (await ctx.db.query(`SELECT version FROM ${table} WHERE ${match}`, ...where(noteId)))[0].version;
       function seed(note) {
         const doc = new Y.Doc();
         doc.transact(() => {
@@ -9117,8 +9520,19 @@ var require_collab = __commonJS({
         if (!rows.length || rows[0].pending) return null;
         const doc = new Y.Doc();
         for (const row of rows) Y.applyUpdate(doc, bytes(row.data));
-        return { doc, base: rows[0].seq, seq: rows[rows.length - 1].seq, pending: rows.length - 1 };
+        return {
+          doc,
+          base: rows[0].seq,
+          seq: rows[rows.length - 1].seq,
+          pending: rows.length - 1,
+          stateChars: rows[0].data.length,
+          pendingChars: rows.slice(1).reduce((total, row) => total + row.data.length, 0)
+        };
       }
+      const compaction = (noteId, doc, last2) => [
+        { sql: "UPDATE note_crdt SET state = ?, seq = ? WHERE note_id = ?", args: [b64(Y.encodeStateAsUpdate(doc)), last2, noteId] },
+        { sql: "DELETE FROM note_updates WHERE note_id = ? AND seq <= ?", args: [noteId, last2] }
+      ];
       async function ensure(ctx, note) {
         await ctx.db.exec("INSERT OR IGNORE INTO note_crdt (note_id, state, seq) VALUES (?, ?, 0)", note.id, b64(seed(note)));
         return load(ctx, note.id);
@@ -9132,44 +9546,35 @@ var require_collab = __commonJS({
         const title = doc.getText("title").toString().trim();
         const { content } = noteFields({ title: previous.title, content: doc.getText("content").toString() });
         return {
-          title: title && title.length <= 160 ? title : void 0,
+          title: title && title.length <= maxTitleChars ? title : void 0,
           content,
           properties: whenValid(() => propertyFields(properties)),
           icon: whenValid(() => noteIcon(doc.getMap("meta").get("icon") ?? null))
         };
       }
-      function writes(noteId, updates, doc, previous, before, seq, pending) {
-        const fields = materialize(doc, previous);
+      async function writes(ctx, noteId, userId, updates, loaded, previous, before) {
+        const fields = materialize(loaded.doc, previous);
         const now = (/* @__PURE__ */ new Date()).toISOString();
-        const ops = updates.map((update, index) => ({
+        const encoded = updates.map((update) => b64(update.data));
+        const ops = [...beforeWrite(noteId, userId), ...updates.map((update, index) => ({
           sql: "INSERT INTO note_updates (note_id, seq, client_id, data) VALUES (?, ?, ?, ?)",
-          args: [noteId, seq + index + 1, update.client, b64(update.data)]
-        }));
-        ops.push(
-          {
-            sql: `UPDATE notes SET title = COALESCE(?, title), content = ?, properties = COALESCE(?, properties),
-      icon = CASE WHEN ? THEN icon ELSE ? END, updated_at = ?, version = version + 1 WHERE id = ? AND archived = 0`,
-            args: [fields.title ?? null, fields.content, fields.properties ?? null, fields.icon === void 0 ? 1 : 0, fields.icon ?? null, now, noteId]
-          },
-          ...referenceOps(before, fields.content)
-        );
-        const last2 = seq + updates.length;
-        if (pending + updates.length >= COMPACT_AFTER) {
-          ops.push(
-            { sql: "UPDATE note_crdt SET state = ?, seq = ? WHERE note_id = ?", args: [b64(Y.encodeStateAsUpdate(doc)), last2, noteId] },
-            { sql: "DELETE FROM note_updates WHERE note_id = ? AND seq <= ?", args: [noteId, last2] }
-          );
-        }
+          args: [noteId, loaded.seq + index + 1, update.client, encoded[index]]
+        }))];
+        ops.push(write2(noteId, fields, now), ...await referenceOps(ctx, noteId, before, fields.content));
+        const last2 = loaded.seq + updates.length;
+        const pendingChars = loaded.pendingChars + encoded.reduce((total, text) => total + text.length, 0);
+        if (loaded.pending + updates.length >= COMPACT_AFTER || pendingChars > Math.max(loaded.stateChars, COMPACT_CHARS))
+          ops.push(...compaction(noteId, loaded.doc, last2));
         return { ops, seq: last2 };
       }
-      async function push(ctx, note, client, encoded) {
+      async function push(ctx, note, userId, client, encoded) {
         if (!Array.isArray(encoded) || encoded.length > 50) fail(400, "Invalid collaboration updates.");
         if (!encoded.length) return null;
         return locked(note.id, async () => {
           const loaded = await load(ctx, note.id) || await ensure(ctx, note);
           const before = loaded.doc.getText("content").toString();
           const updates = encoded.map((text) => {
-            if (typeof text !== "string" || text.length > 2e5) fail(400, "Invalid collaboration update.");
+            if (typeof text !== "string" || text.length > maxUpdateChars) fail(400, "Invalid collaboration update.");
             const data = bytes(text);
             try {
               Y.applyUpdate(loaded.doc, data);
@@ -9180,14 +9585,18 @@ var require_collab = __commonJS({
           });
           if (loaded.doc.store.pendingStructs || loaded.doc.store.pendingDs)
             fail(409, "This editing session is out of sync. Rejoin to continue.");
-          const { ops, seq } = writes(note.id, updates, loaded.doc, note, before, loaded.seq, loaded.pending);
+          const { ops, seq } = await writes(ctx, note.id, userId, updates, loaded, note, before);
           await ctx.db.tx(ops);
           return seq;
         });
       }
-      async function presence(ctx, noteId, userId, client, cursor) {
+      async function presence(ctx, noteId, userId, client, cursor, fresh = false) {
         const text = cursor === null || cursor === void 0 ? null : JSON.stringify(cursor);
         if (text && text.length > 2e3) fail(400, "Invalid cursor.");
+        const key = `${noteId}:${client}`;
+        const last2 = written.get(key);
+        const now = Date.now();
+        if (!fresh && last2?.text === text && last2.userId === userId && now - last2.at < PRESENCE_TTL_MS / 2) return;
         await ctx.db.exec(
           `INSERT INTO note_presence (note_id, client_id, user_id, cursor, seen_at) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(note_id, client_id) DO UPDATE SET user_id = excluded.user_id, cursor = excluded.cursor, seen_at = excluded.seen_at`,
@@ -9195,8 +9604,9 @@ var require_collab = __commonJS({
           client,
           userId,
           text,
-          Date.now()
+          now
         );
+        written.set(key, { text, userId, at: now });
       }
       async function changes(ctx, noteId, client, since) {
         const rows = await ctx.db.query(`SELECT 'state' AS kind, seq, state AS data, NULL AS client_id, NULL AS user_id, NULL AS cursor
@@ -9226,6 +9636,7 @@ var require_collab = __commonJS({
       async function action(input, ctx, userId) {
         const noteId = id2(input.note_id);
         if (input.action === "leave") {
+          written.delete(`${noteId}:${input.client_id}`);
           await ctx.db.exec(
             "DELETE FROM note_presence WHERE note_id = ? AND client_id = ? AND user_id = ?",
             noteId,
@@ -9237,17 +9648,21 @@ var require_collab = __commonJS({
         const client = clientId(input.client_id);
         if (input.action === "join") {
           const note = await requireEditor(ctx, userId, noteId, true);
-          await ctx.db.exec("DELETE FROM note_presence WHERE seen_at < ?", Date.now() - PRESENCE_TTL_MS);
-          await sweep(ctx);
-          await locked(noteId, () => load(ctx, noteId).then((loaded) => loaded || ensure(ctx, note)));
-          await presence(ctx, noteId, userId, client, null);
-          const [{ version }] = await ctx.db.query("SELECT version FROM notes WHERE id = ?", noteId);
-          return { ...await changes(ctx, noteId, client, -1), me: await person(ctx, userId), version };
+          const expired = Date.now() - PRESENCE_TTL_MS;
+          for (const [key, last2] of written) if (last2.at < expired) written.delete(key);
+          await ctx.db.exec("DELETE FROM note_presence WHERE seen_at < ?", expired);
+          await sweep(ctx, noteId);
+          await locked(noteId, async () => {
+            const loaded = await load(ctx, noteId) || await ensure(ctx, note);
+            if (loaded.pending) await ctx.db.tx(compaction(noteId, loaded.doc, loaded.seq));
+          });
+          await presence(ctx, noteId, userId, client, null, true);
+          return { ...await changes(ctx, noteId, client, -1), me: await person(ctx, userId), version: await version(ctx, noteId) };
         }
         if (input.action === "sync") {
           const note = await requireEditor(ctx, userId, noteId);
           const since = Number.isSafeInteger(input.since) && input.since >= 0 ? input.since : fail(400, "Invalid collaboration sequence.");
-          await push(ctx, note, client, input.updates || []);
+          await push(ctx, note, userId, client, input.updates || []);
           await presence(ctx, noteId, userId, client, input.cursor);
           return changes(ctx, noteId, client, since);
         }
@@ -9304,6 +9719,58 @@ var require_collab = __commonJS({
   }
 });
 
+// server/parts.cjs
+var require_parts = __commonJS({
+  "server/parts.cjs"(exports2, module2) {
+    "use strict";
+    var { bodyPartChars, maxBodyParts } = require_limits();
+    var { UUID } = require_common();
+    var TTL_MS = 10 * 60 * 1e3;
+    var MAX_PENDING = maxBodyParts * 2;
+    var PARTS_ID = new RegExp(`^${UUID}$`);
+    function createParts({ fail }) {
+      async function store(ctx, ownerId, input) {
+        const { id: id2, part, parts, data } = input || {};
+        if (typeof id2 !== "string" || !PARTS_ID.test(id2) || !Number.isSafeInteger(parts) || parts < 2 || parts > maxBodyParts || !Number.isSafeInteger(part) || part < 0 || part >= parts || typeof data !== "string" || !data.length || data.length > bodyPartChars || part < parts - 1 && data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data))
+          fail(400, "This change is too large to send.");
+        const now = Date.now();
+        const { results } = await ctx.db.tx([
+          { sql: "DELETE FROM request_parts WHERE created_at < ?", args: [new Date(now - TTL_MS).toISOString()] },
+          {
+            sql: `INSERT OR REPLACE INTO request_parts (id, owner_id, part, parts, data, created_at) SELECT ?, ?, ?, ?, ?, ?
+        WHERE (SELECT COUNT(*) FROM request_parts WHERE owner_id = ? AND NOT (id = ? AND part = ?)) < ?`,
+            args: [id2, ownerId, part, parts, data, new Date(now).toISOString(), ownerId, id2, part, MAX_PENDING]
+          }
+        ]);
+        if (results[1].changes !== 1) fail(429, "Too many changes are on their way. Wait a moment and try again.");
+        return { stored: part };
+      }
+      async function expand(ctx, ownerId, body) {
+        if (!body || typeof body.parts_id !== "string") return body;
+        const rows = await ctx.db.query(
+          "SELECT part, parts, data FROM request_parts WHERE id = ? AND owner_id = ? ORDER BY part",
+          body.parts_id,
+          ownerId
+        );
+        await ctx.db.exec("DELETE FROM request_parts WHERE id = ?", body.parts_id);
+        if (!rows.length || rows.length !== rows[0].parts || rows.some((row, index) => row.part !== index))
+          fail(400, "Part of this change did not arrive. Try again.");
+        let parsed;
+        try {
+          parsed = JSON.parse(Buffer.from(rows.map((row) => row.data).join(""), "base64").toString("utf8"));
+        } catch {
+          parsed = null;
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || "parts_id" in parsed)
+          fail(400, "Part of this change did not arrive. Try again.");
+        return parsed;
+      }
+      return { store, expand };
+    }
+    module2.exports = { createParts };
+  }
+});
+
 // server/service.cjs
 var require_service = __commonJS({
   "server/service.cjs"(exports2, module2) {
@@ -9314,15 +9781,29 @@ var require_service = __commonJS({
     var { isIP } = require("node:net");
     var {
       maxImageBytes,
+      maxPdfBytes,
       maxContentChars,
       maxContentBytes,
       maxPropertiesBytes,
       maxCommentChars,
       maxQuoteChars,
-      quoteContextChars
+      quoteContextChars,
+      maxTitleChars,
+      maxIconChars,
+      maxProperties,
+      maxPropertyOptions,
+      maxPropertyNameChars,
+      maxPropertyTextChars,
+      maxChecklistItems,
+      propertyColors
     } = require_limits();
     var { createAssets } = require_assets();
+    var { UUID, parseList } = require_common();
+    var { rank } = require_search();
+    var { createTrekObjects } = require_trek_objects();
     var { createCollab, personColor } = require_collab();
+    var { createHistory, snapshotKey, snapshotParts, snapshotKeySql, SNAPSHOTS, VERSION_BYTES } = require_history();
+    var { createParts } = require_parts();
     var Problem = class extends Error {
       constructor(status, message, params2 = {}) {
         super(message.replace(/\{(\w+)\}/g, (match, name) => String(params2[name] ?? match)));
@@ -9339,8 +9820,9 @@ var require_service = __commonJS({
       if (!Number.isSafeInteger(n) || n < 1) fail(400, "Invalid trip or day identifier.");
       return n;
     };
+    var idPattern = new RegExp(`^${UUID}$`);
     var id2 = (value) => {
-      if (typeof value !== "string" || !/^[0-9a-f-]{36}$/.test(value)) fail(400, "Invalid note identifier.");
+      if (typeof value !== "string" || !idPattern.test(value)) fail(400, "Invalid note identifier.");
       return value;
     };
     var text = (value, max2, name) => {
@@ -9352,10 +9834,12 @@ var require_service = __commonJS({
       return req.user.id;
     };
     var noteFields = (input) => {
-      const title = text(input.title, 160, "title").trim();
+      const title = text(input.title, maxTitleChars, "title").trim();
       if (!title) fail(400, "Title is required.");
       const content = text(input.content, maxContentChars, "content");
-      if (Buffer.byteLength(content, "utf8") > maxContentBytes) fail(400, "Content must fit within {size} KB.", { size: maxContentBytes / 1e3 });
+      if (Buffer.byteLength(content, "utf8") > maxContentBytes) {
+        fail(400, "Content must fit within {size} KB.", { size: maxContentBytes / 1e3 });
+      }
       if (input.tags === void 0) return { title, content, tags: void 0 };
       if (!Array.isArray(input.tags) || input.tags.length > 12) fail(400, "Use at most 12 tags.");
       const tags = JSON.stringify([...new Set(input.tags.map((tag) => text(tag, 40, "tag").trim()).filter(Boolean))]);
@@ -9365,7 +9849,7 @@ var require_service = __commonJS({
       if (value === null || value === void 0 || value === "") return null;
       if (typeof value !== "string") fail(400, "Invalid note icon.");
       if (value.startsWith("data:")) {
-        if (value.length > 15e4 || !/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/.test(value))
+        if (value.length > maxIconChars || !/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/.test(value))
           fail(400, "Note icon images must be PNG, JPEG, WebP or GIF under 100 KB.");
         return value;
       }
@@ -9373,9 +9857,10 @@ var require_service = __commonJS({
       if (!icon || Array.from(icon).length > 16 || /[<>]/.test(icon)) fail(400, "Invalid note icon.");
       return icon;
     };
-    var PROPERTY_COLORS = 8;
+    var folderName = (value) => text(value, 80, "folder name").trim() || fail(400, "Folder name is required.");
+    var folderIcon = (value) => value ? text(value, 8, "folder icon").trim() : null;
     var propertyValues = {
-      text: (value) => text(value ?? "", 2e3, "text property"),
+      text: (value) => text(value ?? "", maxPropertyTextChars, "text property"),
       number: (value) => {
         if (value === null || value === void 0 || value === "") return null;
         if (typeof value !== "number" || !Number.isFinite(value)) fail(400, "Invalid number property.");
@@ -9389,7 +9874,7 @@ var require_service = __commonJS({
       },
       checkbox: (value) => value === true,
       url: (value) => {
-        const url = text(value ?? "", 2e3, "URL property").trim();
+        const url = text(value ?? "", maxPropertyTextChars, "URL property").trim();
         if (url && !/^https?:\/\/\S+$/i.test(url)) fail(400, "URL properties must start with http:// or https://.");
         return url;
       },
@@ -9404,7 +9889,9 @@ var require_service = __commonJS({
         return [...new Set(value)];
       },
       checklist: (value) => {
-        if (!Array.isArray(value) || value.length > 50) fail(400, "Use at most 50 checklist items.");
+        if (!Array.isArray(value) || value.length > maxChecklistItems) {
+          fail(400, "Use at most {count} checklist items.", { count: maxChecklistItems });
+        }
         return value.map((item) => ({ text: text(item?.text ?? "", 200, "checklist item"), done: item?.done === true }));
       },
       last_edited: () => null
@@ -9414,13 +9901,13 @@ var require_service = __commonJS({
       return value;
     };
     function propertyFields(raw) {
-      if (!Array.isArray(raw) || raw.length > 30) fail(400, "Use at most 30 properties.");
+      if (!Array.isArray(raw) || raw.length > maxProperties) fail(400, "Use at most {count} properties.", { count: maxProperties });
       const ids = /* @__PURE__ */ new Set();
       const properties = raw.map((property) => {
         const pid = propertyId(property?.id);
         if (ids.has(pid)) fail(400, "Duplicate property identifier.");
         ids.add(pid);
-        const name = text(property.name, 40, "property name").trim();
+        const name = text(property.name, maxPropertyNameChars, "property name").trim();
         if (!name) fail(400, "Property name is required.");
         if (!Object.hasOwn(propertyValues, property.type)) fail(400, "Invalid property type.");
         const choice = property.type === "select" || property.type === "multi_select";
@@ -9434,26 +9921,22 @@ var require_service = __commonJS({
         };
       });
       const json2 = JSON.stringify(properties);
-      if (Buffer.byteLength(json2, "utf8") > maxPropertiesBytes) fail(400, "Properties must fit within {size} KB.", { size: maxPropertiesBytes / 1e3 });
+      if (Buffer.byteLength(json2, "utf8") > maxPropertiesBytes) {
+        fail(400, "Properties must fit within {size} KB.", { size: maxPropertiesBytes / 1e3 });
+      }
       return json2;
     }
     function propertyOptions(raw) {
-      if (!Array.isArray(raw) || raw.length > 30) fail(400, "Use at most 30 options per property.");
+      if (!Array.isArray(raw) || raw.length > maxPropertyOptions) {
+        fail(400, "Use at most {count} options per property.", { count: maxPropertyOptions });
+      }
       return raw.map((option) => {
-        const name = text(option?.name, 40, "option name").trim();
+        const name = text(option?.name, maxPropertyNameChars, "option name").trim();
         if (!name) fail(400, "Option name is required.");
-        if (!Number.isInteger(option.color) || option.color < 0 || option.color >= PROPERTY_COLORS) fail(400, "Invalid option color.");
+        if (!Number.isInteger(option.color) || option.color < 0 || option.color >= propertyColors) fail(400, "Invalid option color.");
         return { id: propertyId(option.id), name, color: option.color };
       });
     }
-    var parseList = (json2) => {
-      try {
-        const parsed = JSON.parse(json2);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    };
     function propertyText(properties) {
       return properties.flatMap((property) => {
         if (property.type === "select" || property.type === "multi_select") {
@@ -9466,11 +9949,13 @@ var require_service = __commonJS({
     }
     var decode = (row) => {
       if (!row) return row;
-      return { ...row, tags: parseList(row.tags), properties: parseList(row.properties ?? "[]"), visibility: row.visibility || "private" };
+      const { edited_by: _editors, burst_at: _burst, archived_at: _deleted, ...note } = row;
+      return { ...note, tags: parseList(row.tags), properties: parseList(row.properties ?? "[]"), visibility: row.visibility || "private" };
     };
     var imagePattern = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+["'][^)]*["'])?\)/g;
-    var tripFilePattern = /^fieldnotes:\/\/trip-file\/(\d+)\/(\d+)$/;
+    var tripFilePattern = /^fieldnotes:\/\/trip-file\/(\d{1,12})\/(\d{1,12})$/;
     var pageSize = 7;
+    var maxListLimit = 500;
     var noteSorts = {
       name: (a, b, collator) => collator.compare(a.title, b.title),
       created: (a, b) => a.created_at.localeCompare(b.created_at),
@@ -9478,22 +9963,32 @@ var require_service = __commonJS({
     };
     var hostNotAllowed = "Image host is not allowed. Paste the image itself, or ask an admin to allow this host.";
     var maxSnapshotAssetsBytes = 32 * 1024 * 1024;
-    var maxSnapshotAssets = 100 - 2;
+    var TX_CAP = 100;
+    var maxSnapshotAssets = TX_CAP - 2;
     var maxCommentsPerNote = 500;
-    var allowedImageTypes = /* @__PURE__ */ new Set(["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"]);
+    var assetLimits = {
+      "image/avif": maxImageBytes,
+      "image/gif": maxImageBytes,
+      "image/jpeg": maxImageBytes,
+      "image/png": maxImageBytes,
+      "image/webp": maxImageBytes,
+      "application/pdf": maxPdfBytes
+    };
+    var allowedImageTypes = new Set(Object.keys(assetLimits).filter((type) => type.startsWith("image/")));
     function imageSources(content) {
       const sources = /* @__PURE__ */ new Set();
       for (const match of String(content).matchAll(imagePattern)) sources.add(match[2]);
       return [...sources];
     }
     function tripFileSource(source) {
-      const match = tripFilePattern.exec(source);
-      return match ? { tripId: number(match[1]), fileId: number(match[2]) } : null;
+      const [, tripId, fileId] = (tripFilePattern.exec(source) || []).map(Number);
+      return tripId > 0 && fileId > 0 ? { tripId, fileId } : null;
     }
     function imageData(content, name = "image") {
       const mimetype = String(content.mimetype || "").toLowerCase().split(";")[0];
       const size2 = Number(content.size || 0);
-      if (!allowedImageTypes.has(mimetype) || !Number.isSafeInteger(size2) || size2 > maxImageBytes || typeof content.content_base64 !== "string" || content.content_base64.length > Math.ceil(maxImageBytes * 4 / 3)) {
+      const limit = Object.hasOwn(assetLimits, mimetype) ? assetLimits[mimetype] : 0;
+      if (!limit || !Number.isSafeInteger(size2) || size2 > limit || typeof content.content_base64 !== "string" || content.content_base64.length > Math.ceil(limit * 4 / 3)) {
         fail(415, "Unsupported format: {kind}.", { kind: name });
       }
       return { mimetype, size: size2, content_base64: content.content_base64, data_url: `data:${mimetype};base64,${content.content_base64}` };
@@ -9508,9 +10003,9 @@ var require_service = __commonJS({
     function ipv6Number(address) {
       const normalized = address.toLowerCase().replace(/\.(\d+)(?=:|$)/g, ".$1");
       const expanded = normalized.includes(".") ? normalized.replace(/([^:]+)$/, (_match, ipv4) => {
-        const parts = ipv4.split(".").map(Number);
-        if (parts.length !== 4 || parts.some((part) => part < 0 || part > 255)) return "";
-        return `${(parts[0] << 8 | parts[1]).toString(16)}:${(parts[2] << 8 | parts[3]).toString(16)}`;
+        const parts2 = ipv4.split(".").map(Number);
+        if (parts2.length !== 4 || parts2.some((part) => part < 0 || part > 255)) return "";
+        return `${(parts2[0] << 8 | parts2[1]).toString(16)}:${(parts2[2] << 8 | parts2[3]).toString(16)}`;
       }) : normalized;
       const halves = expanded.split("::");
       const left = halves[0] ? halves[0].split(":") : [];
@@ -9649,77 +10144,96 @@ var require_service = __commonJS({
       fail(502, "Image could not be loaded.");
     }
     async function initialize2(ctx) {
-      await ctx.db.migrate("001_notes", `CREATE TABLE notes (
-    id TEXT PRIMARY KEY, owner_id INTEGER NOT NULL, title TEXT NOT NULL,
-    content TEXT NOT NULL, tags TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0
-  ); CREATE INDEX notes_owner ON notes(owner_id, archived, updated_at);`);
-      await ctx.db.migrate("002_note_visibility", "ALTER TABLE notes ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'");
-      await ctx.db.migrate("003_snapshot_assets", `CREATE TABLE snapshot_assets (
-    trip_id INTEGER NOT NULL, note_id TEXT NOT NULL, source TEXT NOT NULL,
-    mimetype TEXT NOT NULL, size INTEGER NOT NULL, content_base64 TEXT NOT NULL,
-    PRIMARY KEY (trip_id, note_id, source)
-  );`);
-      await ctx.db.migrate("004_note_collaborators", `CREATE TABLE note_collaborators (
+      await ctx.db.migrate("000_schema", `CREATE TABLE IF NOT EXISTS notes (
+    id TEXT PRIMARY KEY, owner_id INTEGER NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, tags TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
+    visibility TEXT NOT NULL DEFAULT 'private', folder_id TEXT, properties TEXT NOT NULL DEFAULT '[]', icon TEXT);
+  CREATE INDEX IF NOT EXISTS notes_owner ON notes(owner_id, archived, updated_at);
+  CREATE INDEX IF NOT EXISTS notes_folder ON notes(folder_id, archived, updated_at);
+  CREATE TABLE IF NOT EXISTS note_collaborators (
     note_id TEXT NOT NULL, user_id INTEGER NOT NULL, role TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
-    created_at TEXT NOT NULL, PRIMARY KEY (note_id, user_id)
-  ); CREATE INDEX note_collaborators_user ON note_collaborators(user_id);`);
-      await ctx.db.migrate("005_folders", `CREATE TABLE folders (
-    id TEXT PRIMARY KEY, owner_id INTEGER NOT NULL, parent_id TEXT, name TEXT NOT NULL,
-    visibility TEXT NOT NULL DEFAULT 'private', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-    archived INTEGER NOT NULL DEFAULT 0
-  ); CREATE INDEX folders_parent ON folders(parent_id, archived, name);
-  CREATE TABLE folder_collaborators (
+    created_at TEXT NOT NULL, PRIMARY KEY (note_id, user_id));
+  CREATE INDEX IF NOT EXISTS note_collaborators_user ON note_collaborators(user_id);
+  CREATE TABLE IF NOT EXISTS folders (
+    id TEXT PRIMARY KEY, owner_id INTEGER NOT NULL, parent_id TEXT, name TEXT NOT NULL, visibility TEXT NOT NULL DEFAULT 'private',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, icon TEXT);
+  CREATE INDEX IF NOT EXISTS folders_parent ON folders(parent_id, archived, name);
+  CREATE TABLE IF NOT EXISTS folder_collaborators (
     folder_id TEXT NOT NULL, user_id INTEGER NOT NULL, role TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
-    created_at TEXT NOT NULL, PRIMARY KEY (folder_id, user_id)
-  ); CREATE INDEX folder_collaborators_user ON folder_collaborators(user_id);
-  ALTER TABLE notes ADD COLUMN folder_id TEXT;
-  CREATE INDEX notes_folder ON notes(folder_id, archived, updated_at);`);
-      await ctx.db.migrate("006_folder_icons", "ALTER TABLE folders ADD COLUMN icon TEXT");
-      await ctx.db.migrate("007_trip_folders", `CREATE TABLE trip_folders (
+    created_at TEXT NOT NULL, PRIMARY KEY (folder_id, user_id));
+  CREATE INDEX IF NOT EXISTS folder_collaborators_user ON folder_collaborators(user_id);
+  CREATE TABLE IF NOT EXISTS trip_folders (
     id TEXT PRIMARY KEY, trip_id INTEGER NOT NULL, parent_id TEXT, name TEXT NOT NULL, icon TEXT,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0
-  ); CREATE INDEX trip_folders_trip ON trip_folders(trip_id, parent_id, archived, name);
-  CREATE TABLE trip_note_folders (
-    trip_id INTEGER NOT NULL, note_id TEXT NOT NULL, folder_id TEXT NOT NULL,
-    PRIMARY KEY (trip_id, note_id)
-  ); CREATE INDEX trip_note_folders_folder ON trip_note_folders(trip_id, folder_id);`);
-      await ctx.db.migrate("008_trip_note_store", `CREATE TABLE IF NOT EXISTS trip_note_links (
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
+  CREATE INDEX IF NOT EXISTS trip_folders_trip ON trip_folders(trip_id, parent_id, archived, name);
+  CREATE TABLE IF NOT EXISTS trip_note_folders (
+    trip_id INTEGER NOT NULL, note_id TEXT NOT NULL, folder_id TEXT NOT NULL, PRIMARY KEY (trip_id, note_id));
+  CREATE INDEX IF NOT EXISTS trip_note_folders_folder ON trip_note_folders(trip_id, folder_id);
+  CREATE TABLE IF NOT EXISTS trip_note_links (
     trip_id INTEGER NOT NULL, note_id TEXT NOT NULL, source_owner_id INTEGER NOT NULL, linked_by INTEGER,
-    mode TEXT NOT NULL CHECK (mode IN ('live', 'snapshot')), day_id INTEGER, linked_at TEXT NOT NULL,
-    legacy_actor_unknown INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (trip_id, note_id)
-  ); CREATE INDEX IF NOT EXISTS trip_note_links_owner ON trip_note_links(source_owner_id, trip_id);
+    mode TEXT NOT NULL CHECK (mode IN ('live', 'snapshot')), day_id INTEGER, linked_at TEXT NOT NULL, PRIMARY KEY (trip_id, note_id));
+  CREATE INDEX IF NOT EXISTS trip_note_links_owner ON trip_note_links(source_owner_id, trip_id);
   CREATE INDEX IF NOT EXISTS trip_note_links_actor ON trip_note_links(linked_by, trip_id);
   CREATE TABLE IF NOT EXISTS trip_note_snapshots (
-    trip_id INTEGER NOT NULL, note_id TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL,
-    tags TEXT NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL, visibility TEXT NOT NULL,
-    captured_at TEXT NOT NULL, PRIMARY KEY (trip_id, note_id)
-  ); CREATE INDEX IF NOT EXISTS trip_note_snapshots_captured ON trip_note_snapshots(trip_id, captured_at);
-  CREATE INDEX IF NOT EXISTS snapshot_assets_note ON snapshot_assets(note_id, trip_id);`);
-      await ctx.db.migrate("009_trip_note_intents", `CREATE TABLE trip_note_intents (
-    owner_id INTEGER PRIMARY KEY, trip_id INTEGER NOT NULL, trip_folder_id TEXT, created_at TEXT NOT NULL
-  );`);
-      await ctx.db.migrate("010_note_properties", `ALTER TABLE notes ADD COLUMN properties TEXT NOT NULL DEFAULT '[]';
-  ALTER TABLE trip_note_snapshots ADD COLUMN properties TEXT NOT NULL DEFAULT '[]';`);
-      await ctx.db.migrate("011_note_collab", `CREATE TABLE note_crdt (note_id TEXT PRIMARY KEY, state TEXT NOT NULL, seq INTEGER NOT NULL);
-  CREATE TABLE note_updates (note_id TEXT NOT NULL, seq INTEGER NOT NULL, client_id INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (note_id, seq));
-  CREATE TABLE note_presence (note_id TEXT NOT NULL, client_id INTEGER NOT NULL, user_id INTEGER NOT NULL, cursor TEXT, seen_at INTEGER NOT NULL,
-    PRIMARY KEY (note_id, client_id));`);
-      await ctx.db.migrate("012_note_icons", "ALTER TABLE notes ADD COLUMN icon TEXT; ALTER TABLE trip_note_snapshots ADD COLUMN icon TEXT;");
-      await ctx.db.migrate("013_note_assets", `CREATE TABLE note_assets (
-    id TEXT PRIMARY KEY, owner_id INTEGER NOT NULL, mimetype TEXT NOT NULL, size INTEGER NOT NULL,
-    content_base64 TEXT NOT NULL, created_at TEXT NOT NULL, released_at TEXT
-  ); CREATE INDEX note_assets_owner ON note_assets(owner_id);
-  CREATE TABLE asset_uploads (
-    id TEXT NOT NULL, owner_id INTEGER NOT NULL, part INTEGER NOT NULL, parts INTEGER NOT NULL,
-    data TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (id, part)
-  ); CREATE INDEX asset_uploads_created ON asset_uploads(created_at);`);
-      await ctx.db.migrate("014_trip_note_comments", `CREATE TABLE trip_note_comments (
+    trip_id INTEGER NOT NULL, note_id TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, tags TEXT NOT NULL,
+    version INTEGER NOT NULL, updated_at TEXT NOT NULL, visibility TEXT NOT NULL, captured_at TEXT NOT NULL,
+    properties TEXT NOT NULL DEFAULT '[]', icon TEXT, PRIMARY KEY (trip_id, note_id));
+  CREATE TABLE IF NOT EXISTS snapshot_assets (
+    trip_id INTEGER NOT NULL, note_id TEXT NOT NULL, source TEXT NOT NULL, mimetype TEXT NOT NULL, size INTEGER NOT NULL,
+    content_base64 TEXT NOT NULL, PRIMARY KEY (trip_id, note_id, source));
+  CREATE INDEX IF NOT EXISTS snapshot_assets_note ON snapshot_assets(note_id, trip_id);
+  CREATE TABLE IF NOT EXISTS trip_note_intents (
+    owner_id INTEGER PRIMARY KEY, trip_id INTEGER NOT NULL, trip_folder_id TEXT, created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS trip_note_comments (
     id TEXT PRIMARY KEY, trip_id INTEGER NOT NULL, note_id TEXT NOT NULL, parent_id TEXT, author_id INTEGER NOT NULL,
     body TEXT NOT NULL, quote TEXT, prefix TEXT, suffix TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-    resolved_at TEXT, resolved_by INTEGER
-  ); CREATE INDEX trip_note_comments_note ON trip_note_comments(trip_id, note_id, created_at);
-  CREATE INDEX trip_note_comments_author ON trip_note_comments(author_id);`);
+    resolved_at TEXT, resolved_by INTEGER);
+  CREATE INDEX IF NOT EXISTS trip_note_comments_note ON trip_note_comments(trip_id, note_id, created_at);
+  CREATE INDEX IF NOT EXISTS trip_note_comments_author ON trip_note_comments(author_id);
+  CREATE TABLE IF NOT EXISTS note_crdt (note_id TEXT PRIMARY KEY, state TEXT NOT NULL, seq INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS note_updates (
+    note_id TEXT NOT NULL, seq INTEGER NOT NULL, client_id INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (note_id, seq));
+  CREATE TABLE IF NOT EXISTS note_presence (
+    note_id TEXT NOT NULL, client_id INTEGER NOT NULL, user_id INTEGER NOT NULL, cursor TEXT, seen_at INTEGER NOT NULL,
+    PRIMARY KEY (note_id, client_id));
+  CREATE TABLE IF NOT EXISTS note_assets (
+    id TEXT PRIMARY KEY, owner_id INTEGER NOT NULL, mimetype TEXT NOT NULL, size INTEGER NOT NULL, content_base64 TEXT NOT NULL,
+    created_at TEXT NOT NULL, released_at TEXT);
+  CREATE INDEX IF NOT EXISTS note_assets_owner ON note_assets(owner_id);
+  CREATE TABLE IF NOT EXISTS asset_uploads (
+    id TEXT NOT NULL, owner_id INTEGER NOT NULL, part INTEGER NOT NULL, parts INTEGER NOT NULL, data TEXT NOT NULL,
+    created_at TEXT NOT NULL, PRIMARY KEY (id, part));
+  CREATE INDEX IF NOT EXISTS asset_uploads_created ON asset_uploads(created_at);`);
+      await ctx.db.migrate("015_note_versions", `CREATE TABLE note_versions (
+    id TEXT PRIMARY KEY, note_id TEXT NOT NULL, edited_at TEXT NOT NULL, editors TEXT NOT NULL DEFAULT '[]',
+    title TEXT NOT NULL, icon TEXT, properties TEXT NOT NULL DEFAULT '[]', content TEXT NOT NULL
+  ); CREATE INDEX note_versions_note ON note_versions(note_id, edited_at);
+  ALTER TABLE notes ADD COLUMN burst_at TEXT;
+  ALTER TABLE notes ADD COLUMN edited_by TEXT NOT NULL DEFAULT '[]';`);
+      await ctx.db.migrate("016_request_parts", `CREATE TABLE request_parts (
+    id TEXT NOT NULL, owner_id INTEGER NOT NULL, part INTEGER NOT NULL, parts INTEGER NOT NULL, data TEXT NOT NULL,
+    created_at TEXT NOT NULL, PRIMARY KEY (id, part)
+  ); CREATE INDEX request_parts_created ON request_parts(created_at);`);
+      await ctx.db.migrate("017_snapshot_history", `ALTER TABLE trip_note_snapshots ADD COLUMN burst_at TEXT;
+  ALTER TABLE trip_note_snapshots ADD COLUMN edited_by TEXT NOT NULL DEFAULT '[]';`);
+      await ctx.db.migrate("018_storage_upkeep", `ALTER TABLE notes ADD COLUMN archived_at TEXT;
+  UPDATE notes SET archived_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE archived = 1;
+  DELETE FROM note_presence WHERE note_id IN (SELECT id FROM notes WHERE archived = 1);
+  DELETE FROM note_updates WHERE note_id IN (SELECT id FROM notes WHERE archived = 1);
+  DELETE FROM note_crdt WHERE note_id IN (SELECT id FROM notes WHERE archived = 1);
+  ALTER TABLE note_versions ADD COLUMN bytes INTEGER NOT NULL DEFAULT 0;
+  UPDATE note_versions SET bytes = ${VERSION_BYTES};
+  CREATE INDEX note_versions_age ON note_versions(edited_at, id, bytes);
+  CREATE INDEX notes_live ON notes(archived, updated_at DESC, id);
+  CREATE INDEX trip_note_links_note ON trip_note_links(note_id, trip_id);
+  CREATE INDEX trip_note_comments_parent ON trip_note_comments(parent_id);
+  CREATE INDEX request_parts_owner ON request_parts(owner_id);
+  DROP INDEX IF EXISTS trip_note_snapshots_captured;
+  CREATE TABLE plugin_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  INSERT OR IGNORE INTO plugin_state (key, value) VALUES ('folders', lower(hex(randomblob(16))));`);
+      await ctx.db.migrate("019_trip_recently_deleted", `ALTER TABLE trip_note_links ADD COLUMN removed_at TEXT;
+  ALTER TABLE trip_note_links ADD COLUMN removed_by INTEGER;
+  CREATE INDEX trip_note_links_removed ON trip_note_links(removed_at);`);
     }
     var roleValue = (role) => {
       if (role === "editor") return 2;
@@ -9751,16 +10265,26 @@ var require_service = __commonJS({
       if (publicGrant) role = 1;
       return { folder: chain[0], chain, role: roleName(role), publicPath, publicGrant };
     }
-    async function listAccessData(ctx, userId, includeNoteCollaborators = true) {
-      const [folderRows, folderCollaboratorRows, noteCollaboratorRows] = await Promise.all([
-        ctx.db.query(
-          "SELECT id, owner_id, parent_id, name, icon, visibility, created_at, updated_at, archived FROM folders WHERE archived = 0"
-        ),
+    var FOLDERS_CHANGED = { sql: "UPDATE plugin_state SET value = lower(hex(randomblob(16))) WHERE key = 'folders'" };
+    var folderCache = { generation: null, folders: /* @__PURE__ */ new Map() };
+    async function folderTree(ctx) {
+      const [stamp] = await ctx.db.query("SELECT value FROM plugin_state WHERE key = 'folders'");
+      if (stamp && stamp.value === folderCache.generation) return folderCache.folders;
+      const rows = await ctx.db.query(
+        "SELECT id, owner_id, parent_id, name, icon, visibility, created_at, updated_at, archived FROM folders WHERE archived = 0"
+      );
+      folderCache = { generation: stamp?.value ?? null, folders: new Map(rows.map((folder) => [folder.id, folder])) };
+      return folderCache.folders;
+    }
+    var writeFolders = (ctx, sql, ...args2) => ctx.db.tx([{ sql, args: args2 }, FOLDERS_CHANGED]);
+    async function listAccessData(ctx, userId, includeNoteCollaborators = true, folders = null) {
+      const [tree, folderCollaboratorRows, noteCollaboratorRows] = await Promise.all([
+        folders || folderTree(ctx),
         ctx.db.query("SELECT folder_id, role FROM folder_collaborators WHERE user_id = ?", userId),
         includeNoteCollaborators ? ctx.db.query("SELECT note_id, role FROM note_collaborators WHERE user_id = ?", userId) : []
       ]);
       return {
-        folders: new Map(folderRows.map((folder) => [folder.id, folder])),
+        folders: tree,
         folderCollaborators: new Map(folderCollaboratorRows.map((row) => [row.folder_id, row.role])),
         noteCollaborators: new Map(noteCollaboratorRows.map((row) => [row.note_id, row.role]))
       };
@@ -9826,9 +10350,8 @@ var require_service = __commonJS({
       return n;
     }
     async function tripFolderList(ctx, tripId) {
-      const trip = await checkTrip(ctx, tripId);
       const rows = await ctx.db.query(`SELECT id, trip_id, parent_id, name, icon, created_at, updated_at FROM trip_folders
-    WHERE trip_id = ? AND archived = 0 ORDER BY parent_id, name, id`, trip.id);
+    WHERE trip_id = ? AND archived = 0 ORDER BY parent_id, name, id`, tripId);
       return rows.map((row) => ({
         id: row.id,
         trip_id: row.trip_id,
@@ -9843,6 +10366,10 @@ var require_service = __commonJS({
         can_manage: true
       }));
     }
+    async function tripFolder(ctx, tripId, folderId) {
+      const [folder] = await ctx.db.query("SELECT * FROM trip_folders WHERE id = ? AND trip_id = ? AND archived = 0", id2(folderId), tripId);
+      return folder || fail(404, "Folder not found.");
+    }
     async function checkReparent(ctx, table, folder, parentId, scope = {}) {
       const where = Object.keys(scope).map((column) => ` AND ${column} = ?`).join("");
       let current = parentId;
@@ -9854,105 +10381,73 @@ var require_service = __commonJS({
       const duplicate = await ctx.db.query(`SELECT id FROM ${table} WHERE id != ? AND archived = 0 AND name = ?${where} AND (parent_id = ? OR (parent_id IS NULL AND ? IS NULL))`, folder.id, folder.name, ...Object.values(scope), parentId, parentId);
       if (duplicate.length) fail(409, "A folder with this name already exists here.");
     }
-    async function tripFolderAction(input, ctx) {
-      const tripId = number(input.trip_id);
-      await checkTrip(ctx, tripId);
-      if (input.action === "folders") return tripFolderList(ctx, tripId);
-      if (["folder_create", "folder_move", "folder_parent", "folder_icon", "folder_archive"].includes(input.action))
-        await requireTripEdit(ctx, tripId);
+    async function tripFolderAction(input, ctx, trip) {
+      if (input.action === "folders") return tripFolderList(ctx, trip.id);
+      await requireTripEdit(ctx, trip.id);
+      const listed = async (folderId) => (await tripFolderList(ctx, trip.id)).find((item) => item.id === folderId);
       if (input.action === "folder_create") {
-        const name = text(input.name, 80, "folder name").trim();
-        if (!name) fail(400, "Folder name is required.");
-        const parentId = input.parent_id ? id2(input.parent_id) : null;
-        if (parentId) {
-          const [parent] = await ctx.db.query("SELECT id FROM trip_folders WHERE id = ? AND trip_id = ? AND archived = 0", parentId, tripId);
-          if (!parent) fail(404, "Folder not found.");
-        }
-        const duplicate = parentId ? await ctx.db.query(
-          "SELECT id FROM trip_folders WHERE trip_id = ? AND parent_id = ? AND name = ? AND archived = 0",
-          tripId,
-          parentId,
-          name
-        ) : await ctx.db.query(
-          "SELECT id FROM trip_folders WHERE trip_id = ? AND parent_id IS NULL AND name = ? AND archived = 0",
-          tripId,
-          name
-        );
+        const name = folderName(input.name);
+        const parentId = input.parent_id ? (await tripFolder(ctx, trip.id, input.parent_id)).id : null;
+        const duplicate = await ctx.db.query(`SELECT id FROM trip_folders WHERE trip_id = ? AND name = ? AND archived = 0
+      AND (parent_id = ? OR (parent_id IS NULL AND ? IS NULL))`, trip.id, name, parentId, parentId);
         if (duplicate.length) fail(409, "A folder with this name already exists here.");
-        const folderId2 = randomUUID();
-        const now = (/* @__PURE__ */ new Date()).toISOString();
-        const icon = input.icon ? text(input.icon, 8, "folder icon").trim() : null;
+        const folderId = randomUUID();
+        const now2 = (/* @__PURE__ */ new Date()).toISOString();
         await ctx.db.exec(`INSERT INTO trip_folders (id, trip_id, parent_id, name, icon, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`, folderId2, tripId, parentId, name, icon, now, now);
-        return (await tripFolderList(ctx, tripId)).find((folder2) => folder2.id === folderId2);
+      VALUES (?, ?, ?, ?, ?, ?, ?)`, folderId, trip.id, parentId, name, folderIcon(input.icon), now2, now2);
+        return listed(folderId);
       }
-      if (input.action === "folder_move") {
+      if (input.action === "folder_move_note") {
         const noteId = id2(input.note_id);
-        const [link] = await ctx.db.query("SELECT note_id FROM trip_note_links WHERE trip_id = ? AND note_id = ?", tripId, noteId);
-        if (!link) fail(404, "Linked note not found.");
-        const targetId = input.folder_id ? id2(input.folder_id) : null;
+        await tripLink(ctx, trip.id, noteId);
+        const targetId = input.folder_id ? (await tripFolder(ctx, trip.id, input.folder_id)).id : null;
         if (targetId) {
-          const [target] = await ctx.db.query("SELECT id FROM trip_folders WHERE id = ? AND trip_id = ? AND archived = 0", targetId, tripId);
-          if (!target) fail(404, "Folder not found.");
           await ctx.db.exec(
             "INSERT OR REPLACE INTO trip_note_folders (trip_id, note_id, folder_id) VALUES (?, ?, ?)",
-            tripId,
+            trip.id,
             noteId,
             targetId
           );
-        } else {
-          await ctx.db.exec("DELETE FROM trip_note_folders WHERE trip_id = ? AND note_id = ?", tripId, noteId);
-        }
+        } else await ctx.db.exec("DELETE FROM trip_note_folders WHERE trip_id = ? AND note_id = ?", trip.id, noteId);
         return { moved: true, folder_id: targetId };
       }
-      const folderId = id2(input.folder_id);
-      const [folder] = await ctx.db.query("SELECT * FROM trip_folders WHERE id = ? AND trip_id = ? AND archived = 0", folderId, tripId);
-      if (!folder) fail(404, "Folder not found.");
-      if (input.action === "folder_parent") {
-        const parentId = input.parent_id ? id2(input.parent_id) : null;
-        if (parentId) {
-          const [parent] = await ctx.db.query("SELECT id FROM trip_folders WHERE id = ? AND trip_id = ? AND archived = 0", parentId, tripId);
-          if (!parent) fail(404, "Folder not found.");
-        }
-        await checkReparent(ctx, "trip_folders", folder, parentId, { trip_id: tripId });
-        await ctx.db.exec("UPDATE trip_folders SET parent_id = ?, updated_at = ? WHERE id = ?", parentId, (/* @__PURE__ */ new Date()).toISOString(), folderId);
-        return (await tripFolderList(ctx, tripId)).find((item) => item.id === folderId);
+      const folder = await tripFolder(ctx, trip.id, input.folder_id);
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      if (input.action === "folder_move") {
+        const parentId = input.parent_id ? (await tripFolder(ctx, trip.id, input.parent_id)).id : null;
+        await checkReparent(ctx, "trip_folders", folder, parentId, { trip_id: trip.id });
+        await ctx.db.exec("UPDATE trip_folders SET parent_id = ?, updated_at = ? WHERE id = ?", parentId, now, folder.id);
+        return listed(folder.id);
       }
       if (input.action === "folder_icon") {
-        const icon = input.icon ? text(input.icon, 8, "folder icon").trim() : null;
-        await ctx.db.exec("UPDATE trip_folders SET icon = ?, updated_at = ? WHERE id = ?", icon, (/* @__PURE__ */ new Date()).toISOString(), folderId);
-        return (await tripFolderList(ctx, tripId)).find((item) => item.id === folderId);
+        await ctx.db.exec("UPDATE trip_folders SET icon = ?, updated_at = ? WHERE id = ?", folderIcon(input.icon), now, folder.id);
+        return listed(folder.id);
       }
       if (input.action === "folder_archive") {
         const [child] = await ctx.db.query(
           "SELECT id FROM trip_folders WHERE trip_id = ? AND parent_id = ? AND archived = 0 LIMIT 1",
-          tripId,
-          folderId
+          trip.id,
+          folder.id
         );
         const [assignment] = await ctx.db.query(
           "SELECT note_id FROM trip_note_folders WHERE trip_id = ? AND folder_id = ? LIMIT 1",
-          tripId,
-          folderId
+          trip.id,
+          folder.id
         );
         if (child || assignment) fail(409, "Move child folders and notes before deleting this folder.");
-        await ctx.db.exec("UPDATE trip_folders SET archived = 1, updated_at = ? WHERE id = ?", (/* @__PURE__ */ new Date()).toISOString(), folderId);
+        await ctx.db.exec("UPDATE trip_folders SET archived = 1, updated_at = ? WHERE id = ?", now, folder.id);
         return { archived: true };
       }
       fail(400, "Unknown trip folder action.");
     }
-    async function tripNotes(ctx, tripId, folderId = null, actorId = null) {
-      const trip = await checkTrip(ctx, tripId);
-      const links = await ctx.db.query(
-        "SELECT note_id, source_owner_id, mode, day_id, linked_at FROM trip_note_links WHERE trip_id = ? ORDER BY linked_at, note_id",
-        trip.id
-      );
+    async function tripNotes(ctx, trip, actorId = null) {
+      const links = await ctx.db.query(`SELECT note_id, source_owner_id, mode, day_id, linked_at FROM trip_note_links
+    WHERE trip_id = ? AND removed_at IS NULL ORDER BY linked_at, note_id`, trip.id);
       if (!links.length) return { trip, notes: [] };
       const assignments = new Map((await ctx.db.query("SELECT note_id, folder_id FROM trip_note_folders WHERE trip_id = ?", trip.id)).map((row) => [row.note_id, row.folder_id]));
-      const visibleLinks = folderId ? links.filter((link) => assignments.get(link.note_id) === folderId) : links;
-      if (!visibleLinks.length) return { trip, notes: [] };
       const members = await ctx.trips.members(trip.id);
       const memberIds = /* @__PURE__ */ new Set([trip.user_id, ...members.map((member) => member.id)]);
-      const ids = visibleLinks.map((link) => link.note_id);
+      const ids = links.map((link) => link.note_id);
       const [rows, snapshots] = await Promise.all([
         ctx.db.query("SELECT * FROM notes WHERE id IN (SELECT value FROM json_each(?))", JSON.stringify(ids)),
         ctx.db.query("SELECT * FROM trip_note_snapshots WHERE trip_id = ?", trip.id)
@@ -9961,7 +10456,7 @@ var require_service = __commonJS({
       const canSnapshot = (row) => Boolean(access && noteAccessFromRows(actorId, row, access).canRead);
       const notesById = new Map(rows.map((row) => [row.id, { ...decode(row), can_snapshot: canSnapshot(row) }]));
       const snapshotsById = new Map(snapshots.map((row) => [row.note_id, decode(row)]));
-      const notes = visibleLinks.map((link) => {
+      const notes = links.map((link) => {
         const noteId = link.note_id;
         const folder_id = assignments.get(noteId) || null;
         if (link.mode === "snapshot") {
@@ -9986,16 +10481,39 @@ var require_service = __commonJS({
       const seen = /* @__PURE__ */ new Set();
       return input.changes.map((change) => {
         const userId = userNumber(change?.user_id);
-        if (seen.has(userId) || !["editor", "viewer"].includes(change?.role)) fail(400, "Invalid collaborator changes.");
+        if (seen.has(userId) || !["editor", "viewer", "none"].includes(change?.role)) fail(400, "Invalid collaborator changes.");
         seen.add(userId);
         return { userId, role: change.role };
       });
     }
+    async function roster(ctx, userId, kind, targetId) {
+      const rows = await ctx.db.query(`SELECT user_id, role, created_at FROM ${kind}_collaborators WHERE ${kind}_id = ?
+    ORDER BY created_at, user_id`, targetId);
+      const candidates = await collaborationCandidates(ctx, userId);
+      return {
+        collaborators: rows.map((row) => ({ ...row, user: candidates.get(row.user_id) || { id: row.user_id } })),
+        candidates: [...candidates.values()]
+      };
+    }
+    async function saveRoles(ctx, userId, kind, targetId, input) {
+      const changes = roleChanges(input);
+      const candidates = await collaborationCandidates(ctx, userId);
+      for (const change of changes) {
+        if (change.userId === userId) {
+          fail(400, kind === "note" ? "The note owner is always an editor." : "The folder owner is always an editor.");
+        }
+        if (change.role !== "none" && !candidates.has(change.userId)) fail(403, "This user is not available for collaboration.");
+      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      await ctx.db.tx(changes.map((change) => change.role === "none" ? { sql: `DELETE FROM ${kind}_collaborators WHERE ${kind}_id = ? AND user_id = ?`, args: [targetId, change.userId] } : { sql: `INSERT INTO ${kind}_collaborators (${kind}_id, user_id, role, created_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(${kind}_id, user_id) DO UPDATE SET role = excluded.role`, args: [targetId, change.userId, change.role, now] }));
+      return changes;
+    }
     async function listFolders(ctx, userId) {
       const access = await listAccessData(ctx, userId, false);
       return [...access.folders.values()].sort((a, b) => String(a.parent_id || "").localeCompare(String(b.parent_id || "")) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)).flatMap((row) => {
-        const folderAccess2 = folderAccessFromRows(userId, row.id, access.folders, access.folderCollaborators);
-        if (!folderAccess2?.role) return [];
+        const rights = folderAccessFromRows(userId, row.id, access.folders, access.folderCollaborators);
+        if (!rights?.role) return [];
         return [{
           id: row.id,
           owner_id: row.owner_id,
@@ -10003,43 +10521,29 @@ var require_service = __commonJS({
           name: row.name,
           icon: row.icon || null,
           visibility: row.visibility,
-          role: folderAccess2.role,
+          role: rights.role,
           created_at: row.created_at,
           updated_at: row.updated_at,
-          public_path: folderAccess2.publicPath,
+          public_path: rights.publicPath,
           can_manage: row.owner_id === userId
         }];
       });
     }
-    async function folderCollaborators(ctx, userId, folderId) {
-      const [folder] = await ctx.db.query("SELECT * FROM folders WHERE id = ? AND archived = 0", id2(folderId));
-      if (!folder || folder.owner_id !== userId) fail(404, "Folder not found.");
-      const rows = await ctx.db.query(
-        "SELECT user_id, role, created_at FROM folder_collaborators WHERE folder_id = ? ORDER BY created_at, user_id",
-        folder.id
-      );
-      const candidates = await collaborationCandidates(ctx, userId);
-      return {
-        collaborators: rows.map((row) => ({ ...row, user: candidates.get(row.user_id) || { id: row.user_id } })),
-        candidates: [...candidates.values()]
-      };
-    }
     async function folderAction(input, ctx, userId) {
-      if (input.action === "list") return listFolders(ctx, userId);
+      const listed = async (folderId2) => (await listFolders(ctx, userId)).find((item) => item.id === folderId2);
       if (input.action === "create") {
-        const name = text(input.name, 80, "folder name").trim();
-        if (!name) fail(400, "Folder name is required.");
+        const name = folderName(input.name);
         if (!["private", "public"].includes(input.visibility || "private")) fail(400, "Invalid folder visibility.");
         const parentId = input.parent_id ? id2(input.parent_id) : null;
         if (parentId) await folderForWrite(ctx, userId, parentId);
-        const duplicate = parentId ? await ctx.db.query("SELECT id FROM folders WHERE parent_id = ? AND name = ? AND archived = 0", parentId, name) : await ctx.db.query("SELECT id FROM folders WHERE parent_id IS NULL AND owner_id = ? AND name = ? AND archived = 0", userId, name);
+        const duplicate = await ctx.db.query(`SELECT id FROM folders WHERE name = ? AND archived = 0
+      AND (parent_id = ? OR (parent_id IS NULL AND ? IS NULL AND owner_id = ?))`, name, parentId, parentId, userId);
         if (duplicate.length) fail(409, "A folder with this name already exists here.");
         const folderId2 = randomUUID();
-        const now = (/* @__PURE__ */ new Date()).toISOString();
-        const icon = input.icon ? text(input.icon, 8, "folder icon").trim() : null;
-        await ctx.db.exec(`INSERT INTO folders (id, owner_id, parent_id, name, icon, visibility, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, folderId2, userId, parentId, name, icon, input.visibility || "private", now, now);
-        return (await listFolders(ctx, userId)).find((folder2) => folder2.id === folderId2);
+        const now2 = (/* @__PURE__ */ new Date()).toISOString();
+        await writeFolders(ctx, `INSERT INTO folders (id, owner_id, parent_id, name, icon, visibility, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, folderId2, userId, parentId, name, folderIcon(input.icon), input.visibility || "private", now2, now2);
+        return listed(folderId2);
       }
       if (input.action === "move_note") {
         const noteId = id2(input.note_id);
@@ -10051,72 +10555,32 @@ var require_service = __commonJS({
       const folderId = id2(input.folder_id);
       const [folder] = await ctx.db.query("SELECT * FROM folders WHERE id = ? AND archived = 0", folderId);
       if (!folder || folder.owner_id !== userId) fail(404, "Folder not found.");
-      if (input.action === "rename") {
-        const name = text(input.name, 80, "folder name").trim();
-        if (!name) fail(400, "Folder name is required.");
-        const duplicate = await ctx.db.query("SELECT id FROM folders WHERE id != ? AND archived = 0 AND name = ? AND (parent_id = ? OR (parent_id IS NULL AND ? IS NULL AND owner_id = ?))", folderId, name, folder.parent_id, folder.parent_id, userId);
-        if (duplicate.length) fail(409, "A folder with this name already exists here.");
-        await ctx.db.exec("UPDATE folders SET name = ?, updated_at = ? WHERE id = ?", name, (/* @__PURE__ */ new Date()).toISOString(), folderId);
-        return (await listFolders(ctx, userId)).find((item) => item.id === folderId);
-      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
       if (input.action === "move") {
         const parentId = input.parent_id ? id2(input.parent_id) : null;
         if (parentId) await folderForWrite(ctx, userId, parentId);
         await checkReparent(ctx, "folders", folder, parentId, parentId ? {} : { owner_id: userId });
-        await ctx.db.exec("UPDATE folders SET parent_id = ?, updated_at = ? WHERE id = ?", parentId, (/* @__PURE__ */ new Date()).toISOString(), folderId);
-        return (await listFolders(ctx, userId)).find((item) => item.id === folderId);
+        await writeFolders(ctx, "UPDATE folders SET parent_id = ?, updated_at = ? WHERE id = ?", parentId, now, folderId);
+        return listed(folderId);
       }
       if (input.action === "visibility") {
         if (!["private", "public"].includes(input.visibility)) fail(400, "Invalid folder visibility.");
-        await ctx.db.exec(
-          "UPDATE folders SET visibility = ?, updated_at = ? WHERE id = ?",
-          input.visibility,
-          (/* @__PURE__ */ new Date()).toISOString(),
-          folderId
-        );
-        return (await listFolders(ctx, userId)).find((item) => item.id === folderId);
+        await writeFolders(ctx, "UPDATE folders SET visibility = ?, updated_at = ? WHERE id = ?", input.visibility, now, folderId);
+        return listed(folderId);
       }
       if (input.action === "icon") {
-        const icon = input.icon ? text(input.icon, 8, "folder icon").trim() : null;
-        await ctx.db.exec("UPDATE folders SET icon = ?, updated_at = ? WHERE id = ?", icon, (/* @__PURE__ */ new Date()).toISOString(), folderId);
-        return (await listFolders(ctx, userId)).find((item) => item.id === folderId);
+        await writeFolders(ctx, "UPDATE folders SET icon = ?, updated_at = ? WHERE id = ?", folderIcon(input.icon), now, folderId);
+        return listed(folderId);
       }
       if (input.action === "archive") {
         const [child] = await ctx.db.query("SELECT id FROM folders WHERE parent_id = ? AND archived = 0 LIMIT 1", folderId);
         const [note] = await ctx.db.query("SELECT id FROM notes WHERE folder_id = ? AND archived = 0 LIMIT 1", folderId);
         if (child || note) fail(409, "Move child folders and notes before deleting this folder.");
-        await ctx.db.exec("UPDATE folders SET archived = 1, updated_at = ? WHERE id = ?", (/* @__PURE__ */ new Date()).toISOString(), folderId);
+        await writeFolders(ctx, "UPDATE folders SET archived = 1, updated_at = ? WHERE id = ?", now, folderId);
         return { archived: true };
       }
-      if (input.action === "collaborators") return folderCollaborators(ctx, userId, folderId);
-      if (input.action === "bulk_roles") {
-        const changes = roleChanges(input);
-        const candidates = await collaborationCandidates(ctx, userId);
-        for (const change of changes) {
-          if (change.userId === userId) fail(400, "The folder owner is always an editor.");
-          if (!candidates.has(change.userId)) fail(403, "This user is not available for collaboration.");
-        }
-        await ctx.db.tx(changes.map((change) => ({
-          sql: `INSERT INTO folder_collaborators (folder_id, user_id, role, created_at) VALUES (?, ?, ?, ?)
-        ON CONFLICT(folder_id, user_id) DO UPDATE SET role = excluded.role`,
-          args: [folderId, change.userId, change.role, (/* @__PURE__ */ new Date()).toISOString()]
-        })));
-        return { saved: changes.length };
-      }
-      if (input.action === "collaborator") {
-        const targetId = userNumber(input.user_id);
-        if (targetId === userId) fail(400, "The folder owner is always an editor.");
-        if (input.action !== "collaborator" || !["editor", "viewer"].includes(input.role)) fail(400, "Choose a valid collaborator role.");
-        const candidates = await collaborationCandidates(ctx, userId);
-        if (!candidates.has(targetId)) fail(403, "This user is not available for collaboration.");
-        await ctx.db.exec(`INSERT INTO folder_collaborators (folder_id, user_id, role, created_at) VALUES (?, ?, ?, ?)
-      ON CONFLICT(folder_id, user_id) DO UPDATE SET role = excluded.role`, folderId, targetId, input.role, (/* @__PURE__ */ new Date()).toISOString());
-        return { saved: true };
-      }
-      if (input.action === "remove_collaborator") {
-        await ctx.db.exec("DELETE FROM folder_collaborators WHERE folder_id = ? AND user_id = ?", folderId, userNumber(input.user_id));
-        return { removed: true };
-      }
+      if (input.action === "collaborators") return roster(ctx, userId, "folder", folderId);
+      if (input.action === "bulk_roles") return { saved: (await saveRoles(ctx, userId, "folder", folderId, input)).length };
       fail(400, "Unknown folder action.");
     }
     async function collaborationCandidates(ctx, userId) {
@@ -10129,50 +10593,23 @@ var require_service = __commonJS({
       return candidates;
     }
     async function collaborators(ctx, userId, noteId) {
-      await owned(ctx, userId, noteId);
-      const rows = await ctx.db.query(
-        "SELECT user_id, role, created_at FROM note_collaborators WHERE note_id = ? ORDER BY created_at, user_id",
-        id2(noteId)
-      );
-      const candidates = await collaborationCandidates(ctx, userId);
-      return {
-        collaborators: rows.map((row) => ({ ...row, user: candidates.get(row.user_id) || { id: row.user_id } })),
-        candidates: [...candidates.values()]
-      };
+      const note = await owned(ctx, userId, noteId);
+      return roster(ctx, userId, "note", note.id);
     }
     async function collaboratorAction(input, ctx, userId) {
-      const noteId = id2(input.note_id);
-      await owned(ctx, userId, noteId);
-      if (input.action === "bulk_roles") {
-        const changes = roleChanges(input);
-        const candidates2 = await collaborationCandidates(ctx, userId);
-        for (const change of changes) {
-          if (change.userId === userId) fail(400, "The note owner is always an editor.");
-          if (!candidates2.has(change.userId)) fail(403, "This user is not available for collaboration.");
-        }
-        await ctx.db.tx(changes.map((change) => ({
-          sql: `INSERT INTO note_collaborators (note_id, user_id, role, created_at) VALUES (?, ?, ?, ?)
-        ON CONFLICT(note_id, user_id) DO UPDATE SET role = excluded.role`,
-          args: [noteId, change.userId, change.role, (/* @__PURE__ */ new Date()).toISOString()]
-        })));
-        return { saved: changes.length };
-      }
-      const targetId = userNumber(input.user_id);
-      if (targetId === userId) fail(400, "The note owner is always an editor.");
-      if (input.action === "remove") {
-        await ctx.db.exec("DELETE FROM note_collaborators WHERE note_id = ? AND user_id = ?", noteId, targetId);
-        collab.forget(noteId);
-        return { removed: true };
-      }
-      if (input.action !== "add" || !["editor", "viewer"].includes(input.role)) fail(400, "Choose a valid collaborator role.");
-      const candidates = await collaborationCandidates(ctx, userId);
-      if (!candidates.has(targetId)) fail(403, "This user is not available for collaboration.");
-      await ctx.db.exec(`INSERT INTO note_collaborators (note_id, user_id, role, created_at) VALUES (?, ?, ?, ?)
-    ON CONFLICT(note_id, user_id) DO UPDATE SET role = excluded.role`, noteId, targetId, input.role, (/* @__PURE__ */ new Date()).toISOString());
-      return { saved: true };
+      const note = await owned(ctx, userId, input.note_id);
+      if (input.action !== "bulk_roles") fail(400, "Unknown action.");
+      const changes = await saveRoles(ctx, userId, "note", note.id, input);
+      if (changes.some((change) => change.role === "none")) collab.forget(note.id);
+      return { saved: changes.length };
     }
-    async function noteForAsset(ctx, userId, noteId, tripId, source) {
-      const note = tripId === null ? await readable(ctx, userId, noteId) : (await tripNotes(ctx, number(tripId))).notes.find((item) => item.id === id2(noteId) && !item.unavailable);
+    async function noteForAsset(ctx, userId, noteId, tripId, source, versionId) {
+      if (versionId) {
+        const version = tripId === null ? await history.read(ctx, userId, noteId, versionId) : await snapshotHistory.read(ctx, userId, snapshotKey(tripId, id2(noteId)), versionId);
+        if (!imageSources(version.content).includes(source)) fail(404, "Image not found.");
+        return version;
+      }
+      const note = tripId === null ? await readable(ctx, userId, noteId) : (await tripNotes(ctx, await checkTrip(ctx, tripId))).notes.find((item) => item.id === id2(noteId) && !item.unavailable);
       if (!note || !imageSources(note.content).includes(source)) fail(404, "Image not found.");
       return note;
     }
@@ -10180,29 +10617,24 @@ var require_service = __commonJS({
       const noteId = id2(input.note_id);
       const source = text(input.source, 2048, "image source");
       const tripId = input.trip_id === void 0 || input.trip_id === null || input.trip_id === "" ? null : number(input.trip_id);
-      await noteForAsset(ctx, userId, noteId, tripId, source);
+      await noteForAsset(ctx, userId, noteId, tripId, source, input.version_id);
       if (tripId !== null) {
-        const [snapshot2] = await ctx.db.query(
-          "SELECT mimetype, size, content_base64 FROM snapshot_assets WHERE trip_id = ? AND note_id = ? AND source = ?",
-          tripId,
-          noteId,
-          source
-        );
+        const [snapshot2] = await ctx.db.query(`SELECT mimetype, size, content_base64 FROM snapshot_assets
+      WHERE trip_id = ? AND note_id = ? AND source = ?`, tripId, noteId, source);
         if (snapshot2) return { source, ...imageData(snapshot2) };
       }
       const uploaded = await uploads.read(ctx, source);
       if (uploaded) return { source, ...imageData(uploaded, "uploaded image") };
-      const file = tripFileSource(source);
-      if (file) return { source, ...imageData(await ctx.files.getContent(file.tripId, file.fileId), "trip file") };
       if (/^https:\/\//i.test(source)) return { source, ...await fetchExternalImage(source) };
       fail(400, "Unsupported image source.");
     }
-    async function captureSnapshotAssets(ctx, sources, keptBytes = 0) {
+    async function captureSnapshotAssets(ctx, sources, keptBytes = 0, tripId = null) {
       if (sources.length > maxSnapshotAssets) fail(400, "A snapshot can include at most {count} images.", { count: maxSnapshotAssets });
       const assets = [];
       let totalBytes = keptBytes;
       for (const source of sources) {
         const file = tripFileSource(source);
+        if (file && file.tripId !== tripId) continue;
         let image;
         try {
           let content = file ? await ctx.files.getContent(file.tripId, file.fileId) : await uploads.read(ctx, source);
@@ -10214,20 +10646,43 @@ var require_service = __commonJS({
           throw error;
         }
         totalBytes += image.size;
-        if (totalBytes > maxSnapshotAssetsBytes) fail(400, "Snapshot images exceed the 32 MB limit.");
+        if (totalBytes > maxSnapshotAssetsBytes) {
+          fail(400, "Snapshot images exceed the {size} MB limit.", { size: maxSnapshotAssetsBytes / 1024 / 1024 });
+        }
         assets.push({ source, ...image });
       }
       return assets;
     }
-    async function beginTripNote(ctx, input) {
-      const trip = await checkTrip(ctx, input.trip_id);
+    var freezeOps = (tripId, note, assets, capturedAt) => [
+      { sql: `INSERT INTO trip_note_snapshots (trip_id, note_id, title, content, tags, properties, icon, version, updated_at, visibility,
+    captured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args: [
+        tripId,
+        note.id,
+        note.title,
+        note.content,
+        JSON.stringify(note.tags),
+        JSON.stringify(note.properties),
+        note.icon ?? null,
+        note.version,
+        note.updated_at,
+        note.visibility,
+        capturedAt
+      ] },
+      ...copyOps(tripId, note.id, assets)
+    ];
+    var copyOps = (tripId, noteId, assets, guard = null) => assets.map((copy2) => ({
+      sql: `INSERT OR REPLACE INTO snapshot_assets (trip_id, note_id, source, mimetype, size, content_base64)
+    SELECT ?, ?, ?, ?, ?, ?${guard ? ` WHERE ${guard.sql}` : ""}`,
+      args: [tripId, noteId, copy2.source, copy2.mimetype, copy2.size, copy2.content_base64, ...guard?.args || []]
+    }));
+    async function inBatches(ctx, ops) {
+      for (let at = 0; at < ops.length; at += TX_CAP) await ctx.db.tx(ops.slice(at, at + TX_CAP));
+    }
+    var INTENT_TTL_MS = 10 * 60 * 1e3;
+    async function beginTripNote(ctx, trip, actorId, input) {
       await requireTripEdit(ctx, trip.id);
-      const ownerId = await tripActor(ctx, trip, input.actor_id);
-      const tripFolderId = input.trip_folder_id ? id2(input.trip_folder_id) : null;
-      if (tripFolderId) {
-        const [folder] = await ctx.db.query("SELECT id FROM trip_folders WHERE id = ? AND trip_id = ? AND archived = 0", tripFolderId, trip.id);
-        if (!folder) fail(404, "Folder not found.");
-      }
+      const ownerId = await tripActor(ctx, trip, actorId);
+      const tripFolderId = input.trip_folder_id ? (await tripFolder(ctx, trip.id, input.trip_folder_id)).id : null;
       await ctx.db.exec(`INSERT OR REPLACE INTO trip_note_intents (owner_id, trip_id, trip_folder_id, created_at)
     VALUES (?, ?, ?, ?)`, ownerId, trip.id, tripFolderId, (/* @__PURE__ */ new Date()).toISOString());
       return { staged: true };
@@ -10236,7 +10691,7 @@ var require_service = __commonJS({
       const [intent] = await ctx.db.query("SELECT trip_id, trip_folder_id, created_at FROM trip_note_intents WHERE owner_id = ?", userId);
       if (!intent) return null;
       await ctx.db.exec("DELETE FROM trip_note_intents WHERE owner_id = ?", userId);
-      if (Date.now() - Date.parse(intent.created_at) > 10 * 60 * 1e3) return null;
+      if (Date.now() - Date.parse(intent.created_at) > INTENT_TTL_MS) return null;
       try {
         const trip = await checkTrip(ctx, intent.trip_id);
         await requireTripEdit(ctx, trip.id);
@@ -10254,29 +10709,24 @@ var require_service = __commonJS({
       const icon = noteIcon(input.icon);
       const libraryFolderId = input.library_folder_id ? id2(input.library_folder_id) : null;
       if (libraryFolderId) await folderForWrite(ctx, userId, libraryFolderId);
-      const tripFolderId = input.trip_folder_id ? id2(input.trip_folder_id) : null;
-      if (tripFolderId) {
-        const [folder] = await ctx.db.query("SELECT id FROM trip_folders WHERE id = ? AND trip_id = ? AND archived = 0", tripFolderId, trip.id);
-        if (!folder) fail(404, "Folder not found.");
-      }
+      const tripFolderId = input.trip_folder_id ? (await tripFolder(ctx, trip.id, input.trip_folder_id)).id : null;
       const noteId = randomUUID();
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const ops = [
         {
-          sql: `INSERT INTO notes (id, owner_id, title, content, tags, properties, icon, visibility, folder_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'private', ?, ?, ?)`,
-          args: [noteId, userId, title, content, tags ?? "[]", properties, icon, libraryFolderId, now, now]
+          sql: `INSERT INTO notes (id, owner_id, title, content, tags, properties, icon, visibility, folder_id, created_at, updated_at,
+      burst_at, edited_by) VALUES (?, ?, ?, ?, ?, ?, ?, 'private', ?, ?, ?, ?, json_array(?))`,
+          args: [noteId, userId, title, content, tags ?? "[]", properties, icon, libraryFolderId, now, now, now, userId]
         },
-        {
-          sql: `INSERT INTO trip_note_links (trip_id, note_id, source_owner_id, linked_by, mode, day_id, linked_at)
-        VALUES (?, ?, ?, ?, 'live', NULL, ?)`,
-          args: [trip.id, noteId, userId, userId, now]
-        }
+        { sql: `INSERT INTO trip_note_links (trip_id, note_id, source_owner_id, linked_by, mode, day_id, linked_at)
+      VALUES (?, ?, ?, ?, 'live', NULL, ?)`, args: [trip.id, noteId, userId, userId, now] }
       ];
-      if (tripFolderId) ops.push({
-        sql: "INSERT INTO trip_note_folders (trip_id, note_id, folder_id) VALUES (?, ?, ?)",
-        args: [trip.id, noteId, tripFolderId]
-      });
+      if (tripFolderId) {
+        ops.push({
+          sql: "INSERT INTO trip_note_folders (trip_id, note_id, folder_id) VALUES (?, ?, ?)",
+          args: [trip.id, noteId, tripFolderId]
+        });
+      }
       await ctx.db.tx([...ops, ...uploads.referenceOps("", content)]);
       return owned(ctx, userId, noteId);
     }
@@ -10288,41 +10738,14 @@ var require_service = __commonJS({
       if (input.mode === "live" && note.owner_id !== userId && !(await noteAccess(ctx, userId, note)).publicReadable)
         fail(403, "Only the owner can share a private note live. Import a snapshot instead.");
       await requireTripEdit(ctx, trip.id);
-      const [existing] = await ctx.db.query("SELECT note_id FROM trip_note_links WHERE trip_id = ? AND note_id = ?", trip.id, note.id);
+      const [existing] = await ctx.db.query("SELECT removed_at FROM trip_note_links WHERE trip_id = ? AND note_id = ?", trip.id, note.id);
+      if (existing?.removed_at) fail(409, "This note is in the trip\u2019s Recently deleted. Recover it there, or delete it permanently first.");
       if (existing) fail(409, "Already linked. Remove the existing link before replacing it.");
       const linkedAt = (/* @__PURE__ */ new Date()).toISOString();
-      const assets = input.mode === "snapshot" ? await captureSnapshotAssets(ctx, imageSources(note.content)) : [];
-      const ops = [{
-        sql: `INSERT INTO trip_note_links (trip_id, note_id, source_owner_id, linked_by, mode, day_id, linked_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        args: [trip.id, note.id, note.owner_id, userId, input.mode, dayId, linkedAt]
-      }];
+      const ops = [{ sql: `INSERT INTO trip_note_links (trip_id, note_id, source_owner_id, linked_by, mode, day_id, linked_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`, args: [trip.id, note.id, note.owner_id, userId, input.mode, dayId, linkedAt] }];
       if (input.mode === "snapshot") {
-        ops.push({
-          sql: `INSERT INTO trip_note_snapshots (trip_id, note_id, title, content, tags, properties, icon, version,
-        updated_at, visibility, captured_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: [
-            trip.id,
-            note.id,
-            note.title,
-            note.content,
-            JSON.stringify(note.tags),
-            JSON.stringify(note.properties),
-            note.icon ?? null,
-            note.version,
-            note.updated_at,
-            note.visibility,
-            linkedAt
-          ]
-        });
-        for (const asset2 of assets) {
-          ops.push({
-            sql: `INSERT INTO snapshot_assets (trip_id, note_id, source, mimetype, size, content_base64)
-          VALUES (?, ?, ?, ?, ?, ?)`,
-            args: [trip.id, note.id, asset2.source, asset2.mimetype, asset2.size, asset2.content_base64]
-          });
-        }
+        ops.push(...freezeOps(trip.id, note, await captureSnapshotAssets(ctx, imageSources(note.content)), linkedAt));
       }
       try {
         await ctx.db.tx(ops);
@@ -10342,16 +10765,21 @@ var require_service = __commonJS({
       return userId;
     }
     async function tripLink(ctx, tripId, noteId) {
-      const [link] = await ctx.db.query("SELECT * FROM trip_note_links WHERE trip_id = ? AND note_id = ?", tripId, noteId);
+      const [link] = await ctx.db.query(
+        "SELECT * FROM trip_note_links WHERE trip_id = ? AND note_id = ? AND removed_at IS NULL",
+        tripId,
+        noteId
+      );
       return link || fail(404, "Linked note not found.");
     }
-    async function tripNote(ctx, tripId, noteId, actorId) {
-      const note = (await tripNotes(ctx, tripId, null, actorId)).notes.find((item) => item.id === noteId);
+    async function tripNote(ctx, trip, noteId, actorId) {
+      const note = (await tripNotes(ctx, trip, actorId)).notes.find((item) => item.id === noteId);
       return note || fail(404, "Linked note not found.");
     }
-    async function saveSnapshot(ctx, trip, input, actorId) {
+    async function saveSnapshot(ctx, trip, input, actorId, { force = false } = {}) {
       await requireTripEdit(ctx, trip.id);
       const noteId = id2(input.note_id);
+      await tripLink(ctx, trip.id, noteId);
       const [current] = await ctx.db.query("SELECT * FROM trip_note_snapshots WHERE trip_id = ? AND note_id = ?", trip.id, noteId);
       if (!current) fail(404, "Snapshot not found.");
       if (input.version !== current.version) fail(409, "This note changed. Reload before saving.");
@@ -10366,29 +10794,43 @@ var require_service = __commonJS({
       const added = await captureSnapshotAssets(
         ctx,
         sources.filter((source) => !keptSources.has(source)),
-        kept.reduce((total, row) => total + row.size, 0)
+        kept.reduce((total, row) => total + row.size, 0),
+        trip.id
       );
-      const guard = "EXISTS (SELECT 1 FROM trip_note_snapshots WHERE trip_id = ? AND note_id = ? AND version = ?)";
-      const guardArgs = [trip.id, noteId, current.version];
+      const guard = {
+        sql: "EXISTS (SELECT 1 FROM trip_note_snapshots WHERE trip_id = ? AND note_id = ? AND version = ?)",
+        args: [trip.id, noteId, current.version]
+      };
       const now = (/* @__PURE__ */ new Date()).toISOString();
-      await ctx.db.tx([
-        { sql: `DELETE FROM snapshot_assets WHERE trip_id = ? AND note_id = ? AND source NOT IN (SELECT value FROM json_each(?))
-      AND ${guard}`, args: [trip.id, noteId, JSON.stringify([...keptSources]), ...guardArgs] },
-        ...added.map((asset2) => ({
-          sql: `INSERT OR REPLACE INTO snapshot_assets (trip_id, note_id, source, mimetype, size, content_base64)
-        SELECT ?, ?, ?, ?, ?, ? WHERE ${guard}`,
-          args: [trip.id, noteId, asset2.source, asset2.mimetype, asset2.size, asset2.content_base64, ...guardArgs]
-        })),
+      const key = snapshotKey(trip.id, noteId);
+      const copies = copyOps(trip.id, noteId, added, guard);
+      const writes = [
+        ...snapshotHistory.beforeWrite(key, actorId, { force, version: current.version }),
         {
           sql: `UPDATE trip_note_snapshots SET title = ?, content = ?, properties = COALESCE(?, properties),
       icon = CASE WHEN ? THEN ? ELSE icon END, version = version + 1, updated_at = ?
       WHERE trip_id = ? AND note_id = ? AND version = ?`,
-          args: [title, content, properties, icon !== void 0 ? 1 : 0, icon ?? null, now, ...guardArgs]
+          args: [title, content, properties, icon !== void 0 ? 1 : 0, icon ?? null, now, ...guard.args]
         }
-      ]);
-      const saved = await tripNote(ctx, trip.id, noteId, actorId);
+      ];
+      if (copies.length + writes.length > TX_CAP) await inBatches(ctx, copies.splice(0));
+      await ctx.db.tx([...copies, ...writes]);
+      const saved = await tripNote(ctx, trip, noteId, actorId);
       if (saved.updated_at !== now) fail(409, "This note changed. Reload before saving.");
+      await snapshotCollab.external(ctx, { ...saved, id: key });
       return saved;
+    }
+    async function restoreSnapshot(ctx, actorId, key, input) {
+      const version = await snapshotHistory.read(ctx, actorId, key, input.version_id);
+      const { tripId, noteId } = snapshotParts(key);
+      return saveSnapshot(ctx, await checkTrip(ctx, tripId), {
+        note_id: noteId,
+        version: input.version,
+        title: version.title,
+        content: version.content,
+        properties: version.properties,
+        icon: version.icon
+      }, actorId, { force: true });
     }
     async function convertToSnapshot(ctx, trip, input, actorId) {
       await requireTripEdit(ctx, trip.id);
@@ -10401,35 +10843,17 @@ var require_service = __commonJS({
         throw error;
       });
       const assets = await captureSnapshotAssets(ctx, imageSources(note.content));
-      const now = (/* @__PURE__ */ new Date()).toISOString();
       await ctx.db.tx([
+        ...freezeOps(trip.id, note, assets, (/* @__PURE__ */ new Date()).toISOString()),
         {
-          sql: `INSERT INTO trip_note_snapshots (trip_id, note_id, title, content, tags, properties, icon, version,
-      updated_at, visibility, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: [
-            trip.id,
-            note.id,
-            note.title,
-            note.content,
-            JSON.stringify(note.tags),
-            JSON.stringify(note.properties),
-            note.icon ?? null,
-            note.version,
-            note.updated_at,
-            note.visibility,
-            now
-          ]
-        },
-        ...assets.map((asset2) => ({
-          sql: `INSERT INTO snapshot_assets (trip_id, note_id, source, mimetype, size, content_base64) VALUES (?, ?, ?, ?, ?, ?)`,
-          args: [trip.id, note.id, asset2.source, asset2.mimetype, asset2.size, asset2.content_base64]
-        })),
-        { sql: "UPDATE trip_note_links SET mode = 'snapshot' WHERE trip_id = ? AND note_id = ? AND mode = 'live'", args: [trip.id, note.id] }
+          sql: "UPDATE trip_note_links SET mode = 'snapshot' WHERE trip_id = ? AND note_id = ? AND mode = 'live' AND removed_at IS NULL",
+          args: [trip.id, note.id]
+        }
       ]).catch((error) => {
         if (/UNIQUE constraint failed: trip_note_snapshots/.test(error.message)) fail(409, "This note is already a snapshot.");
         throw error;
       });
-      return tripNote(ctx, trip.id, noteId, actorId);
+      return tripNote(ctx, trip, noteId, actorId);
     }
     var commentBody = (value) => {
       const body = text(value, maxCommentChars, "comment").trim();
@@ -10512,47 +10936,106 @@ var require_service = __commonJS({
       } else fail(400, "Unknown action.");
       return tripComments(ctx, trip, noteId);
     }
-    async function tripAction2(input, ctx, authenticatedUserId = null) {
+    async function tripAction2(raw, ctx, authenticatedUserId = null) {
+      const sender = authenticatedUserId ?? raw.actor_id;
+      if (raw.action === "part" || raw.parts_id) {
+        const owner = Number(sender);
+        if (!Number.isSafeInteger(owner) || owner < 1) fail(401, "Sign in first.");
+        if (raw.action === "part") return parts.store(ctx, owner, raw);
+      }
+      const input = raw.parts_id ? { ...await parts.expand(ctx, Number(sender), raw), actor_id: raw.actor_id } : raw;
       if (input.action === "links") {
         if (!Number.isSafeInteger(authenticatedUserId) || authenticatedUserId < 1) fail(401, "Sign in first.");
         const noteId = id2(input.note_id);
         await owned(ctx, authenticatedUserId, noteId);
         const accessibleTrips = await ctx.trips.listMine();
-        const tripById = new Map(accessibleTrips.map((trip) => [Number(trip.id), trip]));
-        const links = await ctx.db.query("SELECT trip_id, mode, day_id FROM trip_note_links WHERE note_id = ? ORDER BY trip_id", noteId);
+        const tripById = new Map(accessibleTrips.map((trip2) => [Number(trip2.id), trip2]));
+        const links = await ctx.db.query(
+          "SELECT trip_id, mode, day_id FROM trip_note_links WHERE note_id = ? AND removed_at IS NULL ORDER BY trip_id",
+          noteId
+        );
         return links.flatMap((link) => {
-          const trip = tripById.get(link.trip_id);
-          return trip ? [{ id: link.trip_id, title: trip.title, mode: link.mode, day_id: link.day_id }] : [];
+          const trip2 = tripById.get(link.trip_id);
+          return trip2 ? [{ id: link.trip_id, title: trip2.title, mode: link.mode, day_id: link.day_id }] : [];
         });
       }
       const tripId = number(input.trip_id);
-      if (["folders", "folder_create", "folder_icon", "folder_archive", "folder_move", "folder_parent"].includes(input.action)) {
-        return tripFolderAction(input, ctx);
+      if (["collab", "snapshot_history", "snapshot_version", "snapshot_restore"].includes(input.action)) {
+        const actorId = Number(sender);
+        if (!Number.isSafeInteger(actorId) || actorId < 1) fail(401, "Sign in first.");
+        const key = snapshotKey(tripId, id2(input.note_id));
+        if (input.action === "collab") return snapshotCollab.action({ ...input, action: input.op, note_id: key }, ctx, actorId);
+        if (input.action === "snapshot_history") return snapshotHistory.list(ctx, actorId, key);
+        if (input.action === "snapshot_version") return snapshotHistory.read(ctx, actorId, key, input.version_id);
+        return restoreSnapshot(ctx, actorId, key, input);
+      }
+      if (input.action === "asset") return asset(ctx, input.version_id ? Number(sender) : null, input);
+      const trip = await checkTrip(ctx, tripId);
+      if (["folders", "folder_create", "folder_icon", "folder_archive", "folder_move", "folder_move_note"].includes(input.action)) {
+        return tripFolderAction(input, ctx, trip);
       }
       if (input.action === "list") {
-        const actorId = authenticatedUserId ?? input.actor_id;
-        const trip = await checkTrip(ctx, tripId);
-        return tripNotes(ctx, trip.id, input.folder_id ? id2(input.folder_id) : null, actorId ? await tripActor(ctx, trip, actorId) : null);
+        const listed = await tripNotes(ctx, trip, sender ? await tripActor(ctx, trip, sender) : null);
+        const search = text(input.q || "", 120, "search");
+        if (!search) return listed;
+        const found = listed.notes.flatMap((note) => {
+          const match = !note.unavailable && rank(search, note, propertyText(note.properties || []));
+          return match ? [{ ...note, snippet: match.snippet, score: match.score }] : [];
+        });
+        return { ...listed, notes: found.sort((a, b) => b.score - a.score).map(({ score: _score, ...note }) => note) };
       }
-      if (input.action === "asset") return asset(ctx, null, input);
-      if (input.action === "begin_note") return beginTripNote(ctx, input);
-      await checkTrip(ctx, tripId);
+      if (input.action === "begin_note") return beginTripNote(ctx, trip, sender, input);
       if (input.action === "days") return ctx.trips.getDays(tripId);
+      if (input.action === "reference") return resolveReference(ctx, null, input.ref, trip, input.embed === true);
+      if (input.action === "link_targets") {
+        return linkTargets(ctx, null, { q: input.q, exclude: input.exclude, trip, headings: input.headings === true });
+      }
+      if (input.action === "backlinks") return backlinks(ctx, null, input.note_id, trip);
       if (input.action === "can_edit") {
         await requireTripEdit(ctx, tripId);
         return { can_edit: true };
       }
+      if (input.action === "file") {
+        await requireTripEdit(ctx, tripId);
+        const source = text(input.source, 2048, "image source");
+        const file = tripFileSource(source);
+        if (!file || file.tripId !== tripId) fail(404, "Image not found.");
+        return { source, ...imageData(await ctx.files.getContent(tripId, file.fileId), "trip file") };
+      }
+      if (input.action === "objects") {
+        if (input.refs !== void 0) return trekObjects.resolve(ctx, tripId, input.refs);
+        await requireTripEdit(ctx, tripId);
+        return trekObjects.list(ctx, tripId);
+      }
+      if (input.action === "files") {
+        await requireTripEdit(ctx, tripId);
+        return (await ctx.files.list(tripId)).flatMap((file) => {
+          const name = String(file.original_name || file.name || file.filename || "");
+          const size2 = Number(file.file_size ?? file.size) || 0;
+          const pdf = (file.mime_type || file.mimetype) === "application/pdf" || /\.pdf$/i.test(name);
+          return pdf && size2 <= maxPdfBytes ? [{
+            source: `fieldnotes://trip-file/${tripId}/${file.id}`,
+            name,
+            size: size2,
+            created_at: file.created_at || null
+          }] : [];
+        });
+      }
       if (input.action === "unlink") {
         const noteId = id2(input.note_id);
         await requireTripEdit(ctx, tripId);
-        await ctx.db.tx([
-          { sql: "DELETE FROM trip_note_folders WHERE trip_id = ? AND note_id = ?", args: [tripId, noteId] },
-          { sql: "DELETE FROM trip_note_comments WHERE trip_id = ? AND note_id = ?", args: [tripId, noteId] },
-          { sql: "DELETE FROM snapshot_assets WHERE trip_id = ? AND note_id = ?", args: [tripId, noteId] },
-          { sql: "DELETE FROM trip_note_snapshots WHERE trip_id = ? AND note_id = ?", args: [tripId, noteId] },
-          { sql: "DELETE FROM trip_note_links WHERE trip_id = ? AND note_id = ?", args: [tripId, noteId] }
-        ]);
+        const remover = await tripActor(ctx, trip, sender);
+        if (input.mode !== void 0 && (await tripLink(ctx, tripId, noteId)).mode !== input.mode)
+          fail(409, "This trip keeps its own snapshot of this note. Remove it on the trip\u2019s page.");
+        const { changes } = await ctx.db.exec(`UPDATE trip_note_links SET removed_at = ?, removed_by = ?
+      WHERE trip_id = ? AND note_id = ? AND removed_at IS NULL`, (/* @__PURE__ */ new Date()).toISOString(), remover, tripId, noteId);
+        if (changes !== 1) fail(404, "Linked note not found.");
+        snapshotCollab.forget(snapshotKey(tripId, noteId));
         return { removed: true };
+      }
+      if (["deleted", "deleted_recover", "deleted_delete"].includes(input.action)) {
+        await requireTripEdit(ctx, tripId);
+        return tripDeletedAction(ctx, trip, await tripActor(ctx, trip, sender), input);
       }
       if ([
         "comments",
@@ -10564,12 +11047,11 @@ var require_service = __commonJS({
         "snapshot_convert",
         "upload"
       ].includes(input.action)) {
-        const trip = await checkTrip(ctx, tripId);
-        const actorId = await tripActor(ctx, trip, authenticatedUserId ?? input.actor_id);
+        const actorId = await tripActor(ctx, trip, sender);
         if (input.action === "snapshot_save") return saveSnapshot(ctx, trip, input, actorId);
         if (input.action === "snapshot_convert") return convertToSnapshot(ctx, trip, input, actorId);
         if (input.action === "upload") {
-          await requireTripEdit(ctx, trip.id);
+          await requireTripEdit(ctx, tripId);
           return uploads.upload(ctx, actorId, input);
         }
         return commentAction(input, ctx, trip, actorId);
@@ -10577,31 +11059,50 @@ var require_service = __commonJS({
       fail(400, "Unknown action.");
     }
     async function folderPath(ctx, folderId) {
+      const folders = await folderTree(ctx);
       const names = [];
       const seen = /* @__PURE__ */ new Set();
       let currentId = folderId;
       while (currentId) {
         if (seen.has(currentId) || names.length > 64) fail(409, "Folder hierarchy is cyclic.");
         seen.add(currentId);
-        const [folder] = await ctx.db.query("SELECT name, parent_id FROM folders WHERE id = ? AND archived = 0", currentId);
+        const folder = folders.get(currentId);
         if (!folder) return "";
         names.unshift(folder.name);
         currentId = folder.parent_id;
       }
       return names.join("/");
     }
-    async function resolveReference(ctx, userId, reference, tripId = null) {
-      const raw = text(reference, 300, "reference").trim();
-      const notePattern = /^fieldnotes:\/\/note\/([0-9a-f-]{36})$/i;
-      if (tripId !== null) {
-        const notes = (await tripNotes(ctx, number(tripId))).notes.filter((item) => !item.unavailable);
-        const found = notes.find((item) => item.id === (raw.match(notePattern)?.[1] || raw) || item.title === raw || `${item.title}` === raw.split("/").at(-1));
-        return found ? { reference: raw, id: found.id, title: found.title } : { reference: raw, unavailable: true };
+    var wikilinkPattern = /\[\[([^\]|\n]+)(?:\|([^\]\n]*))?\]\]/g;
+    var linkNote = (target) => target.split("#")[0].trim();
+    var linkHeading = (target) => target.includes("#") ? target.slice(target.indexOf("#") + 1).trim() : "";
+    var noteIdPattern = new RegExp(`^(?:fieldnotes://note/)?(${UUID})$`, "i");
+    var noteIdOf = (raw) => noteIdPattern.exec(raw)?.[1].toLowerCase();
+    var noteUrlPattern = new RegExp(`\\]\\(fieldnotes://note/(${UUID})\\)`, "gi");
+    var linkTargetLimit = 8;
+    var tripTarget = (notes, raw) => notes.find((item) => !item.unavailable && (item.id === noteIdOf(raw) || item.title === raw || item.title === raw.split("/").at(-1)));
+    var linksIn = (content) => [...String(content).matchAll(wikilinkPattern)].map((match) => linkNote(match[1])).filter((target) => target && !target.startsWith("trek:")).concat([...String(content).matchAll(noteUrlPattern)].map((match) => match[1].toLowerCase()));
+    function headingsOf(content) {
+      const found = [];
+      let fenced = false;
+      for (const line of String(content).split("\n")) {
+        if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+        const match = !fenced && /^#{1,6}\s+(.+)$/.exec(line);
+        if (match) found.push(match[1].replace(/\s+#+\s*$/, "").trim());
       }
-      if (notePattern.test(raw)) {
+      return found.slice(0, 50);
+    }
+    async function resolveReference(ctx, userId, reference, trip = null, embed = false) {
+      const raw = text(reference, 300, "reference").trim();
+      const found = (note) => ({ reference: raw, id: note.id, title: note.title, ...embed ? { content: note.content } : {} });
+      if (trip) {
+        const target = tripTarget((await tripNotes(ctx, trip)).notes, raw);
+        return target ? found(target) : { reference: raw, unavailable: true };
+      }
+      const noteId = noteIdOf(raw);
+      if (noteId) {
         try {
-          const note = await readable(ctx, userId, raw.match(notePattern)[1]);
-          return { reference: raw, id: note.id, title: note.title };
+          return found(await readable(ctx, userId, noteId));
         } catch {
           return { reference: raw, unavailable: true };
         }
@@ -10617,9 +11118,251 @@ var require_service = __commonJS({
           const path = row.folder_id ? await folderPath(ctx, row.folder_id) : "";
           if (`${path ? `${path}/` : ""}${row.title}` !== raw) continue;
         }
-        return { reference: raw, id: row.id, title: row.title };
+        return found(decode(row));
       }
       return { reference: raw, unavailable: true };
+    }
+    async function linkTargets(ctx, userId, { q = "", exclude = null, trip = null, headings = false }) {
+      const needle = text(q, 120, "search").trim().toLocaleLowerCase();
+      const excluded = exclude ? id2(exclude) : null;
+      let candidates;
+      if (trip) candidates = (await tripNotes(ctx, trip)).notes.filter((item) => !item.unavailable);
+      else {
+        const [rows, access] = await Promise.all([ctx.db.query(`SELECT id, owner_id, title, icon, visibility, folder_id
+      ${headings ? ", content" : ""} FROM notes WHERE archived = 0 ORDER BY updated_at DESC, id`), listAccessData(ctx, userId)]);
+        candidates = rows.filter((row) => {
+          const rights = noteAccessFromRows(userId, row, access);
+          return row.owner_id === userId || Boolean(rights.directRole) || rights.inheritedRole > 0;
+        });
+      }
+      const closeness = (title) => {
+        const value = title.toLocaleLowerCase();
+        if (!needle || value.startsWith(needle)) return 0;
+        if (value.split(/[\s\-_/·]+/).some((word) => word.startsWith(needle))) return 1;
+        return value.includes(needle) ? 2 : -1;
+      };
+      const found = candidates.filter((item) => item.id !== excluded).map((item, order) => ({ item, order, score: closeness(item.title) })).filter(({ score }) => score >= 0).sort((a, b) => a.score - b.score || a.order - b.order).slice(0, linkTargetLimit);
+      let restricted = () => false;
+      if (!trip && excluded && found.length) {
+        const source = await readable(ctx, userId, excluded).catch(() => null);
+        if (source) {
+          const audience = await audienceOf(ctx, source);
+          const holding = await tripsHolding(ctx, found.map(({ item }) => item.id));
+          restricted = (item) => gapOpen(linkGap(audience, item, holding.get(item.id)));
+        }
+      }
+      return { notes: await Promise.all(found.map(async ({ item }) => ({
+        id: item.id,
+        title: item.title,
+        icon: item.icon && !item.icon.startsWith("data:") ? item.icon : null,
+        restricted: restricted(item),
+        path: !trip && item.folder_id ? await folderPath(ctx, item.folder_id) : "",
+        ...headings ? { headings: headingsOf(item.content) } : {}
+      }))) };
+    }
+    var lockedLink = "\uE000";
+    var snippetLine = (content, links) => String(content).split("\n").find((value) => linksIn(value).some(links)) || "";
+    function backlinkSnippet(line, titleOf) {
+      const plain = line.replace(wikilinkPattern, (_match, target, label) => {
+        const note = linkNote(target);
+        const heading = linkHeading(target);
+        if (!note) return label?.trim() || heading;
+        if (!noteIdPattern.test(note)) return label?.trim() || `${note.split("/").at(-1)}${heading ? ` \u203A ${heading}` : ""}`;
+        const title = titleOf(note);
+        return title === void 0 ? lockedLink : `${title}${heading ? ` \u203A ${heading}` : ""}`;
+      }).replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/^\s*(?:#{1,6}\s+|>\s?|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/, "").replace(/[*_~`]/g, "").trim();
+      return plain.length > 160 ? `${plain.slice(0, 159)}\u2026` : plain;
+    }
+    var unspaced = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}]/u;
+    var wordChar = /[\p{L}\p{N}]/u;
+    var unlinkable = /^(```|~~~)[\s\S]*?^\1.*$|`[^`\n]*`|!?\[\[[^\]\n]*\]\]|!?\[[^\]\n]*\]\([^)\n]*\)|<[^>\n]+>|https?:\/\/\S+/gm;
+    function mentionsIn(content, title) {
+      const needle = title.trim().toLowerCase();
+      const written = String(content);
+      const haystack = written.replace(unlinkable, (match) => " ".repeat(match.length)).toLowerCase();
+      if (Array.from(needle).length < 2 || needle.length !== title.trim().length || haystack.length !== written.length) return [];
+      const apart = (edge, next) => !next || unspaced.test(edge) || unspaced.test(next) || !wordChar.test(edge) || !wordChar.test(next);
+      const found = [];
+      for (let at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + needle.length)) {
+        if (apart(needle[0], written[at - 1]) && apart(needle.at(-1), written[at + needle.length])) found.push(at);
+      }
+      return found;
+    }
+    async function backlinks(ctx, userId, noteId, trip = null) {
+      const targetId = id2(noteId);
+      let target;
+      let sources;
+      let resolves;
+      if (trip) {
+        const notes = (await tripNotes(ctx, trip)).notes;
+        target = notes.find((item) => item.id === targetId && !item.unavailable) || fail(404, "Note not found.");
+        sources = notes.filter((item) => !item.unavailable && item.id !== targetId);
+        resolves = async (raw) => tripTarget(notes, raw)?.id === targetId;
+      } else {
+        target = await readable(ctx, userId, targetId);
+        const [rows, access] = await Promise.all([ctx.db.query(`SELECT id, owner_id, title, content, icon, visibility, folder_id, updated_at
+      FROM notes WHERE archived = 0 AND id != ? AND (instr(lower(content), ?) > 0 OR instr(lower(content), lower(?)) > 0)
+      ORDER BY updated_at DESC, id`, targetId, targetId, target.title), listAccessData(ctx, userId)]);
+        sources = rows.map((row) => ({ row, rights: noteAccessFromRows(userId, row, access) })).filter(({ rights }) => rights.canRead).map(({ row, rights }) => ({ ...row, can_link: rights.role >= 2 }));
+        const resolved = /* @__PURE__ */ new Map();
+        resolves = async (raw) => {
+          if (noteIdOf(raw) === targetId) return true;
+          if (noteIdPattern.test(raw) || raw.split("/").at(-1) !== target.title) return false;
+          if (!resolved.has(raw)) resolved.set(raw, (await resolveReference(ctx, userId, raw)).id === targetId);
+          return resolved.get(raw);
+        };
+      }
+      const found = [];
+      const mentioned = [];
+      for (const source of sources) {
+        const matching = /* @__PURE__ */ new Set();
+        for (const raw of new Set(linksIn(source.content))) if (await resolves(raw)) matching.add(raw);
+        if (matching.size) {
+          found.push({ source, line: snippetLine(source.content, (raw) => matching.has(raw)) });
+          continue;
+        }
+        const [first] = mentionsIn(source.content, target.title);
+        if (first !== void 0) {
+          const start = source.content.lastIndexOf("\n", first) + 1;
+          const end = source.content.indexOf("\n", first);
+          mentioned.push({ source, line: source.content.slice(start, end < 0 ? void 0 : end) });
+        }
+      }
+      const titles = new Map([[targetId, target.title], ...sources.map((item) => [item.id, item.title])]);
+      const others = [...new Set([...found, ...mentioned].flatMap(({ line }) => linksIn(line).map(noteIdOf).filter((noteId2) => noteId2 && !titles.has(noteId2))))];
+      if (others.length && !trip) {
+        const [rows, access] = await Promise.all([ctx.db.query(`SELECT id, owner_id, title, visibility, folder_id FROM notes
+      WHERE archived = 0 AND id IN (SELECT value FROM json_each(?))`, JSON.stringify(others)), listAccessData(ctx, userId)]);
+        for (const row of rows) if (noteAccessFromRows(userId, row, access).canRead) titles.set(row.id, row.title);
+      }
+      const titleOf = (raw) => titles.get(noteIdOf(raw));
+      const entry = ({ source, line }) => ({
+        id: source.id,
+        title: source.title,
+        icon: source.icon && !source.icon.startsWith("data:") ? source.icon : null,
+        snippet: backlinkSnippet(line, titleOf)
+      });
+      return {
+        notes: found.map(entry),
+        mentions: mentioned.map((item) => ({ ...entry(item), can_link: !trip && item.source.can_link === true }))
+      };
+    }
+    async function linkMentions(ctx, userId, input) {
+      const source = await editable(ctx, userId, input.note_id);
+      const target = await readable(ctx, userId, input.target_id);
+      const length2 = target.title.trim().length;
+      let content = source.content;
+      const positions = mentionsIn(content, target.title);
+      for (const at of positions.reverse()) {
+        const said = content.slice(at, at + length2).replace(/[[\]|]/g, " ");
+        content = `${content.slice(0, at)}[[${target.id}|${said}]]${content.slice(at + length2)}`;
+      }
+      if (!positions.length) return { linked: 0 };
+      noteFields({ title: source.title, content });
+      await replaceNote(ctx, userId, source, source.version, { content });
+      return { linked: positions.length };
+    }
+    async function audienceOf(ctx, row) {
+      const folders = await folderTree(ctx);
+      const chain = [];
+      for (let current = row.folder_id; current && folders.has(current) && !chain.includes(current); ) {
+        chain.push(current);
+        current = folders.get(current).parent_id;
+      }
+      const [noteRows, folderRows, links] = await Promise.all([
+        ctx.db.query("SELECT user_id FROM note_collaborators WHERE note_id = ?", row.id),
+        chain.length ? ctx.db.query(
+          "SELECT user_id FROM folder_collaborators WHERE folder_id IN (SELECT value FROM json_each(?))",
+          JSON.stringify(chain)
+        ) : [],
+        ctx.db.query("SELECT trip_id FROM trip_note_links WHERE note_id = ? AND removed_at IS NULL", row.id)
+      ]);
+      const people = /* @__PURE__ */ new Set([
+        row.owner_id,
+        ...chain.map((folderId) => folders.get(folderId).owner_id),
+        ...noteRows.map((item) => item.user_id),
+        ...folderRows.map((item) => item.user_id)
+      ]);
+      const readers = /* @__PURE__ */ new Map();
+      for (const userId of people) {
+        const access = await listAccessData(ctx, userId, true, folders);
+        if (noteAccessFromRows(userId, row, access).canRead) readers.set(userId, access);
+      }
+      const anyAccess = readers.get(row.owner_id) || await listAccessData(ctx, row.owner_id, true, folders);
+      return {
+        readers,
+        anyAccess,
+        public: noteAccessFromRows(row.owner_id, row, anyAccess).publicReadable,
+        trips: links.map((link) => link.trip_id)
+      };
+    }
+    function linkGap(source, target, targetTrips) {
+      const people = [...source.readers].filter(([userId, access]) => !noteAccessFromRows(userId, target, access).canRead).map(([userId]) => userId);
+      return {
+        people,
+        trips: source.trips.filter((tripId) => !targetTrips.has(tripId)),
+        public: source.public && !noteAccessFromRows(target.owner_id, target, source.anyAccess).publicReadable
+      };
+    }
+    var gapOpen = (gap) => gap.people.length > 0 || gap.trips.length > 0 || gap.public;
+    var tripsHolding = async (ctx, noteIds) => {
+      const rows = noteIds.length ? await ctx.db.query(
+        "SELECT trip_id, note_id FROM trip_note_links WHERE note_id IN (SELECT value FROM json_each(?)) AND removed_at IS NULL",
+        JSON.stringify(noteIds)
+      ) : [];
+      const trips = new Map(noteIds.map((noteId) => [noteId, /* @__PURE__ */ new Set()]));
+      for (const row of rows) trips.get(row.note_id).add(row.trip_id);
+      return trips;
+    };
+    async function linkAccess(ctx, userId, noteId, targetIds) {
+      const source = await editable(ctx, userId, noteId);
+      const audience = await audienceOf(ctx, source);
+      const targets = [];
+      for (const targetId of targetIds) {
+        try {
+          targets.push(await readable(ctx, userId, targetId));
+        } catch {
+        }
+      }
+      const holding = await tripsHolding(ctx, targets.map((target) => target.id));
+      const [candidates, mine] = await Promise.all([collaborationCandidates(ctx, userId), ctx.trips.listMine()]);
+      const tripTitles = new Map(mine.map((trip) => [Number(trip.id), trip.title]));
+      const links = [];
+      for (const target of targets) {
+        const gap = linkGap(audience, target, holding.get(target.id));
+        if (!gapOpen(gap)) continue;
+        const owner = target.owner_id === userId;
+        links.push({
+          target: { id: target.id, title: target.title },
+          can_share: owner,
+          public: gap.public,
+          people: await Promise.all(gap.people.map(async (personId) => ({
+            user: candidates.get(personId) || await ctx.users.getById(personId) || { id: personId },
+            grantable: owner && candidates.has(personId)
+          }))),
+          trips: gap.trips.filter((tripId) => tripTitles.has(tripId)).map((tripId) => ({ id: tripId, title: tripTitles.get(tripId) })),
+          hidden_trips: gap.trips.filter((tripId) => !tripTitles.has(tripId)).length
+        });
+      }
+      return { links };
+    }
+    async function grantLinkAccess(ctx, userId, input) {
+      const target = await owned(ctx, userId, input.target_id);
+      const userIds = Array.isArray(input.user_ids) ? input.user_ids.map(userNumber) : [];
+      const tripIds = Array.isArray(input.trip_ids) ? input.trip_ids.map(number) : [];
+      if (userIds.length > 100 || tripIds.length > 20) fail(400, "Invalid collaborator changes.");
+      const [current] = (await linkAccess(ctx, userId, input.note_id, [target.id])).links;
+      const people = new Set((current?.people || []).filter((person) => person.grantable).map((person) => Number(person.user.id)));
+      const trips = new Set((current?.trips || []).map((trip) => trip.id));
+      if (userIds.some((personId) => !people.has(personId)) || tripIds.some((tripId) => !trips.has(tripId)))
+        fail(400, "Invalid collaborator changes.");
+      if (userIds.length) await collaboratorAction({
+        action: "bulk_roles",
+        note_id: target.id,
+        changes: userIds.map((personId) => ({ user_id: personId, role: "viewer" }))
+      }, ctx, userId);
+      for (const tripId of tripIds) await createTripLink(ctx, userId, { note_id: target.id, trip_id: tripId, mode: "live" });
+      return linkAccess(ctx, userId, input.note_id, [target.id]);
     }
     async function listNotes(ctx, userId, {
       search = "",
@@ -10628,35 +11371,187 @@ var require_service = __commonJS({
       folderId = null,
       sort = "updated",
       order = "desc",
-      locale
+      locale,
+      limit = pageSize
     }) {
-      const needle = search.toLocaleLowerCase();
-      const matches = (note) => !needle || [note.title, note.content, note.tags.join("\n"), propertyText(note.properties)].some((value) => value.toLocaleLowerCase().includes(needle));
       const [rows, access] = await Promise.all([
-        ctx.db.query(`SELECT id, owner_id, title, content, tags, properties, icon, version,
-      created_at, updated_at, visibility, folder_id FROM notes
-      WHERE archived = 0 ORDER BY updated_at DESC, id`),
+        ctx.db.query(`SELECT id, owner_id, title, tags, properties, icon, version, created_at, updated_at, visibility, folder_id
+      ${search ? ", content" : ""} FROM notes WHERE archived = 0 ORDER BY updated_at DESC, id`),
         listAccessData(ctx, userId, !publicOnly)
       ]);
       const visible = [];
-      let skippedCount = 0;
       for (const row of rows) {
         if (folderId !== null && row.folder_id !== folderId) continue;
-        if (!matches(decode(row))) continue;
+        const { content: _content, ...note } = decode(row);
+        const found = rank(search, { ...note, content: row.content ?? "" }, `${note.tags.join("\n")}
+${propertyText(note.properties)}`);
+        if (!found) continue;
+        let rights;
         try {
-          const noteAccess2 = noteAccessFromRows(userId, row, access);
-          const listed = publicOnly ? row.visibility === "public" && noteAccess2.publicReadable : row.owner_id === userId || Boolean(noteAccess2.directRole) || noteAccess2.inheritedRole > 0;
-          if (listed) visible.push(decode(row));
+          rights = noteAccessFromRows(userId, row, access);
         } catch {
-          skippedCount += 1;
+          continue;
         }
+        const listed = publicOnly ? row.visibility === "public" && rights.publicReadable : row.owner_id === userId || Boolean(rights.directRole) || rights.inheritedRole > 0;
+        if (listed) visible.push(search ? { ...note, score: found.score, snippet: found.snippet } : note);
       }
       const collator = new Intl.Collator(locale, { numeric: true, sensitivity: "base" });
       const direction = order === "asc" ? 1 : -1;
-      visible.sort((a, b) => direction * noteSorts[sort](a, b, collator) || a.id.localeCompare(b.id));
-      return { notes: visible.slice(offset, offset + pageSize), has_more: visible.length > offset + pageSize, skipped_count: skippedCount };
+      visible.sort((a, b) => (b.score || 0) - (a.score || 0) || direction * noteSorts[sort](a, b, collator) || a.id.localeCompare(b.id));
+      return {
+        notes: visible.slice(offset, offset + limit).map(({ score: _score, ...note }) => note),
+        has_more: visible.length > offset + limit
+      };
     }
     var uploads = createAssets({ fail });
+    var parts = createParts({ fail });
+    var history = createHistory({ fail, editable });
+    var trekObjects = createTrekObjects({ fail });
+    var DELETED_KEPT_MS = 30 * 24 * 60 * 60 * 1e3;
+    var PURGE_EVERY_MS = 10 * 60 * 1e3;
+    var purgedAt = 0;
+    var purgeNotes = (where) => [
+      { sql: `DELETE FROM note_collaborators WHERE note_id IN (SELECT id FROM notes WHERE ${where.sql})`, args: where.args },
+      { sql: `DELETE FROM note_versions WHERE note_id IN (SELECT id FROM notes WHERE ${where.sql})`, args: where.args },
+      { sql: `DELETE FROM notes WHERE ${where.sql}`, args: where.args }
+    ];
+    var purgeTripLinks = (where, args2) => [
+      ...["trip_note_folders", "trip_note_comments", "snapshot_assets", "trip_note_snapshots"].map((table) => ({
+        args: args2,
+        sql: `DELETE FROM ${table} WHERE EXISTS (SELECT 1 FROM trip_note_links l WHERE l.trip_id = ${table}.trip_id
+      AND l.note_id = ${table}.note_id AND ${where})`
+      })),
+      ...["note_crdt", "note_updates", "note_presence", "note_versions"].map((table) => ({
+        args: args2,
+        sql: `DELETE FROM ${table} WHERE note_id IN (SELECT ${snapshotKeySql("l.")} FROM trip_note_links l WHERE ${where})`
+      })),
+      { sql: `DELETE FROM trip_note_links AS l WHERE ${where}`, args: args2 }
+    ];
+    var deletedBefore = () => new Date(Date.now() - DELETED_KEPT_MS).toISOString();
+    async function purgeDeleted(ctx) {
+      if (Date.now() - purgedAt < PURGE_EVERY_MS) return;
+      purgedAt = Date.now();
+      await ctx.db.tx([
+        ...purgeNotes({ sql: "archived = 1 AND archived_at < ?", args: [deletedBefore()] }),
+        ...purgeTripLinks("l.removed_at < ?", [deletedBefore()])
+      ]);
+    }
+    var purgeAt = (at) => new Date(Date.parse(at) + DELETED_KEPT_MS).toISOString();
+    async function deletedNote(ctx, userId, noteId) {
+      const [row] = await ctx.db.query(
+        "SELECT * FROM notes WHERE id = ? AND owner_id = ? AND archived = 1 AND archived_at >= ?",
+        id2(noteId),
+        userId,
+        deletedBefore()
+      );
+      if (!row) fail(404, "This note is no longer in Recently deleted.");
+      return row;
+    }
+    async function listDeleted(ctx, userId, noteId) {
+      if (noteId) {
+        const row = await deletedNote(ctx, userId, noteId);
+        return { ...decode(row), deleted_at: row.archived_at, purge_at: purgeAt(row.archived_at) };
+      }
+      const rows = await ctx.db.query(`SELECT id, title, icon, archived_at FROM notes WHERE owner_id = ? AND archived = 1 AND archived_at >= ?
+    ORDER BY archived_at DESC, id`, userId, deletedBefore());
+      return rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        icon: row.icon,
+        deleted_at: row.archived_at,
+        purge_at: purgeAt(row.archived_at)
+      }));
+    }
+    async function deletedAction(ctx, userId, input) {
+      const row = await deletedNote(ctx, userId, input.id);
+      if (input.action === "recover") {
+        const folder = row.folder_id ? await folderAccess(ctx, userId, row.folder_id) : null;
+        const folderId = folder && roleValue(folder.role) >= 2 ? row.folder_id : null;
+        const { results } = await ctx.db.tx([
+          { sql: `UPDATE notes SET archived = 0, archived_at = NULL, folder_id = ?, version = version + 1
+        WHERE id = ? AND owner_id = ? AND archived = 1`, args: [folderId, row.id, userId] },
+          ...uploads.referenceOps("", row.content)
+        ]);
+        if (results[0].changes !== 1) fail(404, "This note is no longer in Recently deleted.");
+        return owned(ctx, userId, row.id);
+      }
+      if (input.action === "delete") {
+        await ctx.db.tx(purgeNotes({ sql: "id = ? AND owner_id = ? AND archived = 1", args: [row.id, userId] }));
+        await uploads.sweep(ctx);
+        return { deleted: true };
+      }
+      fail(400, "Unknown action.");
+    }
+    async function tripDeleted(ctx, trip, noteId = null) {
+      const links = await ctx.db.query(`SELECT note_id, mode, removed_at FROM trip_note_links WHERE trip_id = ? AND removed_at >= ?
+    ${noteId ? "AND note_id = ?" : ""} ORDER BY removed_at DESC, note_id`, trip.id, deletedBefore(), ...noteId ? [noteId] : []);
+      if (!links.length) return [];
+      const ids = JSON.stringify(links.map((link) => link.note_id));
+      const [snapshots, notes, members] = await Promise.all([
+        ctx.db.query("SELECT * FROM trip_note_snapshots WHERE trip_id = ? AND note_id IN (SELECT value FROM json_each(?))", trip.id, ids),
+        ctx.db.query("SELECT * FROM notes WHERE archived = 0 AND id IN (SELECT value FROM json_each(?))", ids),
+        ctx.trips.members(trip.id)
+      ]);
+      const memberIds = new Set([trip.user_id, ...members.map((member) => member.id)].map(Number));
+      const copies = new Map(snapshots.map((row) => [row.note_id, row]));
+      const originals = new Map(notes.map((row) => [row.id, row]));
+      return links.map((link) => {
+        const row = link.mode === "snapshot" ? copies.get(link.note_id) : originals.get(link.note_id);
+        const shown = row && (link.mode === "snapshot" || row.visibility === "public" || memberIds.has(Number(row.owner_id)));
+        return {
+          id: link.note_id,
+          mode: link.mode,
+          deleted_at: link.removed_at,
+          purge_at: purgeAt(link.removed_at),
+          ...shown ? { note: decode(row) } : { unavailable: true }
+        };
+      });
+    }
+    async function tripDeletedAction(ctx, trip, actorId, input) {
+      if (input.action === "deleted" && !input.note_id) {
+        await purgeDeleted(ctx);
+        return (await tripDeleted(ctx, trip)).map(({ note, ...item2 }) => ({ ...item2, title: note?.title ?? null, icon: note?.icon ?? null }));
+      }
+      const noteId = id2(input.note_id);
+      const [item] = await tripDeleted(ctx, trip, noteId);
+      if (!item) fail(404, "This note is no longer in Recently deleted.");
+      if (input.action === "deleted") {
+        const { note, ...rest } = item;
+        return note ? {
+          ...rest,
+          title: note.title,
+          icon: note.icon ?? null,
+          content: note.content,
+          properties: note.properties,
+          updated_at: note.updated_at
+        } : { ...rest, title: null, icon: null, content: "", properties: [] };
+      }
+      const where = "l.trip_id = ? AND l.note_id = ? AND l.removed_at IS NOT NULL";
+      if (input.action === "deleted_delete") {
+        await ctx.db.tx(purgeTripLinks(where, [trip.id, noteId]));
+        return { deleted: true };
+      }
+      if (input.action !== "deleted_recover") fail(400, "Unknown action.");
+      if (item.mode === "live") {
+        const [note] = await ctx.db.query("SELECT * FROM notes WHERE id = ?", noteId);
+        const mayShare = note && (note.owner_id === actorId || !note.archived && (await noteAccess(ctx, actorId, note)).publicReadable);
+        if (!mayShare) fail(403, "Only the author can share this note live again.");
+      }
+      const [folder] = await ctx.db.query(
+        `SELECT f.id FROM trip_note_folders a
+    JOIN trip_folders f ON f.id = a.folder_id AND f.trip_id = a.trip_id WHERE a.trip_id = ? AND a.note_id = ? AND f.archived = 0`,
+        trip.id,
+        noteId
+      );
+      await ctx.db.tx([
+        ...folder ? [] : [{ sql: "DELETE FROM trip_note_folders WHERE trip_id = ? AND note_id = ?", args: [trip.id, noteId] }],
+        {
+          sql: "UPDATE trip_note_links SET removed_at = NULL, removed_by = NULL WHERE trip_id = ? AND note_id = ? AND removed_at IS NOT NULL",
+          args: [trip.id, noteId]
+        }
+      ]);
+      return tripNote(ctx, trip, noteId, actorId);
+    }
     var collab = createCollab({
       fail,
       id: id2,
@@ -10664,17 +11559,139 @@ var require_service = __commonJS({
       noteFields,
       propertyFields,
       noteIcon,
-      referenceOps: uploads.referenceOps,
-      sweep: uploads.sweep
+      referenceOps: async (ctx, noteId, before, after) => uploads.referenceOps(before, after),
+      beforeWrite: history.beforeWrite,
+      sweep: async (ctx) => {
+        await uploads.sweep(ctx);
+        await history.prune(ctx);
+        await purgeDeleted(ctx);
+      }
     });
+    var SNAPSHOT_KEY = new RegExp(`^trip:(\\d{1,12}):(${UUID})$`, "i");
+    function snapshotId(value) {
+      const match = SNAPSHOT_KEY.exec(String(value ?? ""));
+      if (!match) fail(400, "Invalid value: {field}.", { field: "note" });
+      return snapshotKey(Number(match[1]), id2(match[2]));
+    }
+    async function snapshotEditable(ctx, userId, key) {
+      const { tripId, noteId } = snapshotParts(snapshotId(key));
+      const trip = await checkTrip(ctx, tripId);
+      await tripActor(ctx, trip, userId);
+      await requireTripEdit(ctx, trip.id);
+      const [row] = await ctx.db.query(`SELECT s.* FROM trip_note_snapshots s JOIN trip_note_links l USING (trip_id, note_id)
+    WHERE s.trip_id = ? AND s.note_id = ? AND l.removed_at IS NULL`, trip.id, noteId);
+      if (!row) fail(404, "Snapshot not found.");
+      return { ...decode(row), id: key };
+    }
+    async function captureNewSnapshotImages(ctx, key, before, after) {
+      const sources = imageSources(after);
+      if (JSON.stringify(sources) === JSON.stringify(imageSources(before))) return [];
+      if (sources.length > maxSnapshotAssets) fail(400, "A snapshot can include at most {count} images.", { count: maxSnapshotAssets });
+      const { tripId, noteId } = snapshotParts(key);
+      const stored = await ctx.db.query("SELECT source, size FROM snapshot_assets WHERE trip_id = ? AND note_id = ?", tripId, noteId);
+      const known = new Set(stored.map((row) => row.source));
+      const kept = stored.filter((row) => sources.includes(row.source)).reduce((total, row) => total + row.size, 0);
+      const added = await captureSnapshotAssets(ctx, sources.filter((source) => !known.has(source)), kept, tripId);
+      await inBatches(ctx, copyOps(tripId, noteId, added));
+      return [];
+    }
+    var snapshotLeftovers = () => ["note_crdt", "note_updates", "note_presence", "note_versions"].map((table) => ({
+      sql: `DELETE FROM ${table} WHERE note_id LIKE 'trip:%' AND note_id NOT IN (SELECT ${snapshotKeySql()} FROM trip_note_snapshots)`
+    }));
+    var snapshotHistory = createHistory({ fail, editable: snapshotEditable, source: SNAPSHOTS });
+    var snapshotCollab = createCollab({
+      fail,
+      id: snapshotId,
+      editable: snapshotEditable,
+      noteFields,
+      propertyFields,
+      noteIcon,
+      referenceOps: captureNewSnapshotImages,
+      beforeWrite: snapshotHistory.beforeWrite,
+      source: SNAPSHOTS,
+      sweep: async (ctx, key) => {
+        await snapshotHistory.prune(ctx);
+        const { tripId, noteId } = snapshotParts(key);
+        const shown = await ctx.db.query(`SELECT content FROM trip_note_snapshots WHERE trip_id = ? AND note_id = ?
+      UNION ALL SELECT content FROM note_versions WHERE note_id = ?`, tripId, noteId, key);
+        if (shown.length) await ctx.db.exec(
+          `DELETE FROM snapshot_assets WHERE trip_id = ? AND note_id = ?
+      AND source NOT IN (SELECT value FROM json_each(?))`,
+          tripId,
+          noteId,
+          JSON.stringify([...new Set(shown.flatMap((row) => imageSources(row.content)))])
+        );
+      }
+    });
+    async function replaceNote(ctx, userId, current, version, fields, { force = false } = {}) {
+      const {
+        title = current.title,
+        content = current.content,
+        tags,
+        properties,
+        icon,
+        visibility = current.visibility,
+        folderId = current.folder_id
+      } = fields;
+      const { results } = await ctx.db.tx([...history.beforeWrite(current.id, userId, { force, version }), {
+        sql: `UPDATE notes SET title = ?, content = ?, tags = COALESCE(?, tags), properties = COALESCE(?, properties),
+      icon = CASE WHEN ? THEN ? ELSE icon END, visibility = ?, folder_id = ?, updated_at = ?, version = version + 1
+      WHERE id = ? AND version = ? AND archived = 0`,
+        args: [
+          title,
+          content,
+          tags ?? null,
+          properties ?? null,
+          icon !== void 0 ? 1 : 0,
+          icon ?? null,
+          visibility,
+          folderId,
+          (/* @__PURE__ */ new Date()).toISOString(),
+          current.id,
+          version
+        ]
+      }]);
+      if (results.at(-1)?.changes !== 1) fail(409, "This note changed. Reload before saving.");
+      await uploads.track(ctx, current.content, content);
+      await uploads.sweep(ctx);
+      const saved = await readable(ctx, userId, current.id);
+      await collab.external(ctx, saved);
+      return saved;
+    }
+    async function restoreVersion(ctx, userId, input) {
+      const current = await editable(ctx, userId, input.note_id);
+      const version = await history.read(ctx, userId, current.id, input.version_id);
+      const { content } = noteFields({ title: version.title, content: version.content });
+      return replaceNote(ctx, userId, current, input.version, {
+        title: version.title,
+        content,
+        properties: propertyFields(version.properties),
+        icon: noteIcon(version.icon)
+      }, { force: true });
+    }
     async function handle2(action, req, ctx) {
       const userId = actor(req);
-      const body = req.body || {};
+      if (action === "part") return parts.store(ctx, userId, req.body);
+      const body = await parts.expand(ctx, userId, req.body || {});
       const query = req.query || {};
       if (action === "trips") return ctx.trips.listMine();
       if (action === "folders") return listFolders(ctx, userId);
       if (action === "folder") return folderAction({ ...body, ...query }, ctx, userId);
-      if (action === "reference") return resolveReference(ctx, userId, query.ref, query.trip_id || null);
+      if (action === "reference") {
+        return resolveReference(ctx, userId, query.ref, query.trip_id ? await checkTrip(ctx, query.trip_id) : null, query.embed === "1");
+      }
+      if (action === "link_targets") return linkTargets(ctx, userId, { q: query.q, exclude: query.exclude, headings: query.headings === "1" });
+      if (action === "backlinks") return backlinks(ctx, userId, query.note_id);
+      if (action === "link_access") {
+        const targets = text(query.targets || "", 20 * 37, "reference").split(",").filter(Boolean);
+        if (targets.length > 20) fail(400, "Invalid value: {field}.", { field: "reference" });
+        return linkAccess(ctx, userId, query.note_id, targets.map(id2));
+      }
+      if (action === "link_grant") return grantLinkAccess(ctx, userId, body);
+      if (action === "link_mentions") return linkMentions(ctx, userId, body);
+      if (action === "history") return history.list(ctx, userId, query.note_id);
+      if (action === "version") return history.read(ctx, userId, query.note_id, query.id);
+      if (action === "restore") return restoreVersion(ctx, userId, body);
       if (action === "asset") return asset(ctx, userId, query);
       if (action === "upload") return uploads.upload(ctx, userId, body);
       if (action === "collaborators") return collaborators(ctx, userId, query.note_id);
@@ -10697,6 +11714,8 @@ var require_service = __commonJS({
         const offset = Number(query.offset || 0);
         if (!Number.isSafeInteger(offset) || offset < 0) fail(400, "Invalid page.");
         const folderId = query.folder_id ? id2(query.folder_id) : null;
+        const limit = query.limit === void 0 ? pageSize : Number(query.limit);
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > maxListLimit) fail(400, "Invalid page.");
         const sort = query.sort || "updated";
         const order = query.order || "desc";
         if (!Object.hasOwn(noteSorts, sort) || !["asc", "desc"].includes(order)) fail(400, "Invalid sort order.");
@@ -10706,7 +11725,7 @@ var require_service = __commonJS({
         } catch {
           fail(400, "Invalid locale.");
         }
-        return listNotes(ctx, userId, { search, offset, folderId, sort, order, locale, publicOnly: action === "public" });
+        return listNotes(ctx, userId, { search, offset, folderId, sort, order, locale, limit, publicOnly: action === "public" });
       }
       if (action === "read") return readable(ctx, userId, query.id);
       if (action === "save") {
@@ -10723,30 +11742,15 @@ var require_service = __commonJS({
           const folderId2 = body.folder_id === void 0 ? current.folder_id : body.folder_id || null;
           if (folderId2 !== current.folder_id && current.owner_id !== userId) fail(403, "Only the owner can move a note.");
           if (folderId2 && folderId2 !== current.folder_id) await folderForWrite(ctx, userId, folderId2);
-          const visibility2 = body.visibility || current.visibility;
-          const result = await ctx.db.exec(
-            `UPDATE notes SET title = ?, content = ?, tags = COALESCE(?, tags),
-        properties = COALESCE(?, properties),
-        icon = CASE WHEN ? THEN ? ELSE icon END, visibility = ?, folder_id = ?, updated_at = ?, version = version + 1
-        WHERE id = ? AND version = ? AND archived = 0`,
+          return replaceNote(ctx, userId, current, body.version, {
             title,
             content,
-            tags ?? null,
-            properties ?? null,
-            icon !== void 0 ? 1 : 0,
-            icon ?? null,
-            visibility2,
-            folderId2,
-            now,
-            current.id,
-            body.version
-          );
-          if (result.changes !== 1) fail(409, "This note changed. Reload before saving.");
-          await uploads.track(ctx, current.content, content);
-          await uploads.sweep(ctx);
-          const saved = await readable(ctx, userId, current.id);
-          await collab.external(ctx, saved);
-          return saved;
+            tags,
+            properties,
+            icon,
+            visibility: body.visibility || current.visibility,
+            folderId: folderId2
+          });
         }
         const noteId = randomUUID();
         const visibility = body.visibility || "private";
@@ -10754,7 +11758,7 @@ var require_service = __commonJS({
         if (folderId) await folderForWrite(ctx, userId, folderId);
         await ctx.db.exec(
           `INSERT INTO notes (id, owner_id, title, content, tags, properties, icon, visibility, folder_id, created_at,
-      updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      updated_at, burst_at, edited_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json_array(?))`,
           noteId,
           userId,
           title,
@@ -10765,20 +11769,29 @@ var require_service = __commonJS({
           visibility,
           folderId,
           now,
-          now
+          now,
+          now,
+          userId
         );
         await uploads.track(ctx, "", content);
         return owned(ctx, userId, noteId);
       }
+      if (action === "deleted") return listDeleted(ctx, userId, query.id);
+      if (action === "deleted_action") return deletedAction(ctx, userId, body);
       if (action === "archive") {
         const current = await owned(ctx, userId, body.id);
-        const result = await ctx.db.exec(
-          "UPDATE notes SET archived = 1, version = version + 1 WHERE id = ? AND owner_id = ? AND version = ?",
-          body.id,
-          userId,
-          body.version
-        );
-        if (result.changes !== 1) fail(409, "This note changed. Reload before deleting.");
+        const deleted = "EXISTS (SELECT 1 FROM notes WHERE id = ? AND archived = 1)";
+        const { results } = await ctx.db.tx([
+          {
+            sql: `UPDATE notes SET archived = 1, archived_at = ?, version = version + 1 WHERE id = ? AND owner_id = ? AND version = ?`,
+            args: [(/* @__PURE__ */ new Date()).toISOString(), current.id, userId, body.version]
+          },
+          ...["note_presence", "note_updates", "note_crdt"].map((table) => ({
+            sql: `DELETE FROM ${table} WHERE note_id = ? AND ${deleted}`,
+            args: [current.id, current.id]
+          }))
+        ]);
+        if (results[0].changes !== 1) fail(409, "This note changed. Reload before deleting.");
         collab.forget(body.id);
         await uploads.track(ctx, current.content, "");
         await uploads.sweep(ctx);
@@ -10791,9 +11804,11 @@ var require_service = __commonJS({
       await ctx.db.tx([
         { sql: "DELETE FROM trip_note_intents WHERE owner_id = ?", args: [userId] },
         { sql: "DELETE FROM asset_uploads WHERE owner_id = ?", args: [userId] },
+        { sql: "DELETE FROM request_parts WHERE owner_id = ?", args: [userId] },
         { sql: "DELETE FROM note_assets WHERE owner_id = ?", args: [userId] },
         { sql: "DELETE FROM note_presence WHERE user_id = ? OR note_id IN (SELECT id FROM notes WHERE owner_id = ?)", args: [userId, userId] },
         { sql: "DELETE FROM note_updates WHERE note_id IN (SELECT id FROM notes WHERE owner_id = ?)", args: [userId] },
+        { sql: "DELETE FROM note_versions WHERE note_id IN (SELECT id FROM notes WHERE owner_id = ?)", args: [userId] },
         { sql: "DELETE FROM note_crdt WHERE note_id IN (SELECT id FROM notes WHERE owner_id = ?)", args: [userId] },
         // A thread goes with its opening comment; the links removed below take their discussions along.
         { sql: `DELETE FROM trip_note_comments WHERE author_id = ? OR parent_id IN (SELECT id FROM trip_note_comments WHERE author_id = ?)
@@ -10813,6 +11828,7 @@ var require_service = __commonJS({
       SELECT 1 FROM trip_note_links l WHERE l.trip_id = trip_note_snapshots.trip_id AND l.note_id = trip_note_snapshots.note_id
       AND (l.source_owner_id = ? OR l.linked_by = ?))`, args: [userId, userId] },
         { sql: "DELETE FROM trip_note_links WHERE source_owner_id = ? OR linked_by = ?", args: [userId, userId] },
+        ...snapshotLeftovers(),
         {
           sql: "DELETE FROM note_collaborators WHERE user_id = ? OR note_id IN (SELECT id FROM notes WHERE owner_id = ?)",
           args: [userId, userId]
@@ -10824,22 +11840,26 @@ var require_service = __commonJS({
         { sql: "UPDATE notes SET folder_id = NULL WHERE folder_id IN (SELECT id FROM folders WHERE owner_id = ?)", args: [userId] },
         { sql: "UPDATE folders SET parent_id = NULL WHERE parent_id IN (SELECT id FROM folders WHERE owner_id = ?)", args: [userId] },
         { sql: "DELETE FROM folders WHERE owner_id = ?", args: [userId] },
-        { sql: "DELETE FROM notes WHERE owner_id = ?", args: [userId] }
+        { sql: "DELETE FROM notes WHERE owner_id = ?", args: [userId] },
+        FOLDERS_CHANGED
       ]);
     }
     async function exportUserData2(ctx, userId) {
       const [
         notes,
+        noteVersions,
         noteAssets,
         folders,
         noteCollaborators,
-        folderCollaborators2,
+        folderCollaborators,
         tripLinks,
         tripSnapshots,
         tripSnapshotAssets,
+        tripSnapshotVersions,
         tripNoteComments
       ] = await Promise.all([
         ctx.db.query("SELECT * FROM notes WHERE owner_id = ?", userId),
+        ctx.db.query("SELECT * FROM note_versions WHERE note_id IN (SELECT id FROM notes WHERE owner_id = ?)", userId),
         ctx.db.query("SELECT * FROM note_assets WHERE owner_id = ?", userId),
         ctx.db.query("SELECT * FROM folders WHERE owner_id = ?", userId),
         ctx.db.query(
@@ -10857,17 +11877,21 @@ var require_service = __commonJS({
       WHERE l.source_owner_id = ? OR l.linked_by = ?`, userId, userId),
         ctx.db.query(`SELECT a.* FROM snapshot_assets a JOIN trip_note_links l USING (trip_id, note_id)
       WHERE l.source_owner_id = ? OR l.linked_by = ?`, userId, userId),
+        ctx.db.query(`SELECT v.* FROM note_versions v JOIN trip_note_links l ON v.note_id = ${snapshotKeySql("l.")}
+      WHERE l.mode = 'snapshot' AND (l.source_owner_id = ? OR l.linked_by = ?)`, userId, userId),
         ctx.db.query("SELECT * FROM trip_note_comments WHERE author_id = ?", userId)
       ]);
       return {
         notes,
+        noteVersions,
         noteAssets,
         folders,
         noteCollaborators,
-        folderCollaborators: folderCollaborators2,
+        folderCollaborators,
         tripLinks,
         tripSnapshots,
         tripSnapshotAssets,
+        tripSnapshotVersions,
         tripComments: tripNoteComments
       };
     }
@@ -10906,9 +11930,20 @@ var endpoints = [
   ["POST", "/collaborator", "collaborator"],
   ["GET", "/trips", "trips"],
   ["POST", "/folder", "folder"],
+  ["GET", "/link-targets", "link_targets"],
+  ["GET", "/backlinks", "backlinks"],
+  ["GET", "/link-access", "link_access"],
+  ["POST", "/link-grant", "link_grant"],
+  ["POST", "/link-mentions", "link_mentions"],
+  ["GET", "/history", "history"],
+  ["GET", "/version", "version"],
+  ["POST", "/restore", "restore"],
   ["POST", "/trip", "trip"],
   ["POST", "/collab", "collab"],
-  ["POST", "/note-settings", "note_settings"]
+  ["POST", "/note-settings", "note_settings"],
+  ["POST", "/part", "part"],
+  ["GET", "/deleted", "deleted"],
+  ["POST", "/deleted", "deleted_action"]
 ];
 module.exports = definePlugin({
   onLoad: initialize,

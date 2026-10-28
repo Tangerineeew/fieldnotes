@@ -9,7 +9,11 @@ const endpoints = [
   ['POST', '/archive', 'archive'], ['POST', '/link', 'link'], ['GET', '/public', 'public'], ['GET', '/asset', 'asset'],
   ['POST', '/upload', 'upload'], ['GET', '/collaborators', 'collaborators'], ['POST', '/collaborator', 'collaborator'],
   ['GET', '/trips', 'trips'], ['POST', '/folder', 'folder'],
-  ['POST', '/trip', 'trip'], ['POST', '/collab', 'collab'], ['POST', '/note-settings', 'note_settings'],
+  ['GET', '/link-targets', 'link_targets'], ['GET', '/backlinks', 'backlinks'], ['GET', '/link-access', 'link_access'],
+  ['POST', '/link-grant', 'link_grant'], ['POST', '/link-mentions', 'link_mentions'],
+  ['GET', '/history', 'history'], ['GET', '/version', 'version'], ['POST', '/restore', 'restore'],
+  ['POST', '/trip', 'trip'], ['POST', '/collab', 'collab'], ['POST', '/note-settings', 'note_settings'], ['POST', '/part', 'part'],
+  ['GET', '/deleted', 'deleted'], ['POST', '/deleted', 'deleted_action'],
 ];
 
 module.exports = definePlugin({

@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fieldnotes</title>
   <!-- trek:ui -->
-  <link rel="stylesheet" href="./app.css?v=0.1.3&revision=collaborator-layout">
+  <!-- The kit says ready only on DOMContentLoaded, after app.js runs; ask now so a dark TREK never sees a white first frame. -->
+  <script>trek.ready();</script>
+  <link rel="stylesheet" href="./app.css">
 </head>
 <body>
   <div id="root"></div>

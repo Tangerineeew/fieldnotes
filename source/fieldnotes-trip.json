@@ -1,14 +1,14 @@
 {
   "id": "fieldnotes-trip",
   "name": "Trip Fieldnotes",
-  "description": "Shared trip knowledge: linked Fieldnotes and saved snapshots.",
-  "version": "0.2.4",
+  "description": "A notes tab in every trip: read and discuss what you share from Fieldnotes, with bookings as cards. Requires Fieldnotes.",
+  "version": "0.3.0",
   "apiVersion": 1,
   "type": "trip-page",
-  "author": "Xuyu Wang",
+  "author": "Tangerineeew",
   "icon": "NotebookPen",
-  "trek": ">=4.3.0",
+  "trek": ">=4.1.0",
   "nativeModules": false,
   "permissions": [],
-  "pluginDependencies": [{"id": "fieldnotes", "version": ">=0.1.0"}]
+  "pluginDependencies": [{"id": "fieldnotes", "version": ">=0.3.0"}]
 }

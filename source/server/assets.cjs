@@ -1,15 +1,17 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
-const { uploadPartChars, maxImageBytes } = require('../shared/limits.json');
+const { uploadPartChars, maxImageBytes, maxPdfBytes } = require('../shared/limits.json');
+const { UUID } = require('./common.cjs');
 
-// Uploaded images live in the plugin's own database. TREK caps plugin route bodies at 100 KB, so the client
-// sends base64 parts in order and the last one assembles the image.
-const ASSET_SOURCE = /^fieldnotes:\/\/asset\/([0-9a-f-]{36})$/;
-const ASSET_REFERENCE = /fieldnotes:\/\/asset\/([0-9a-f-]{36})/g;
-const MAX_PARTS = Math.ceil(Math.ceil(maxImageBytes / 3) * 4 / uploadPartChars);
-// TREK caps each plugin's ctx.db at 256 MB. Images, stored as base64 alongside snapshot copies, may fill half of it.
-const MAX_STORED_IMAGE_BYTES = 256 * 1024 * 1024 / 2 * 3 / 4;
+// Uploaded images and PDFs live in the plugin's own database. TREK caps plugin route bodies at 100 KB, so the client
+// sends base64 parts in order and the last one assembles the file.
+const ASSET_SOURCE = new RegExp(`^fieldnotes://asset/(${UUID})$`);
+const ASSET_REFERENCE = new RegExp(`fieldnotes://asset/(${UUID})`, 'g');
+const UPLOAD_ID = new RegExp(`^${UUID}$`);
+const MAX_PARTS = Math.ceil(Math.ceil(Math.max(maxImageBytes, maxPdfBytes) / 3) * 4 / uploadPartChars);
+// TREK caps each plugin's ctx.db at 256 MB. Uploads, stored as base64 alongside snapshot copies, may fill half of it.
+const MAX_STORED_BYTES = 256 * 1024 * 1024 / 2 * 3 / 4;
 const UPLOAD_TTL_MS = 60 * 60 * 1000;
 // A removed image survives a short window for undo; an upload never saved into a note survives a day of drafting.
 const RELEASE_GRACE_MS = 10 * 60 * 1000;
@@ -21,6 +23,7 @@ const SIGNATURES = [
   ['image/webp', (bytes) => bytes.subarray(0, 4).toString('latin1') === 'RIFF' && bytes.subarray(8, 12).toString('latin1') === 'WEBP'],
   ['image/avif', (bytes) => bytes.subarray(4, 8).toString('latin1') === 'ftyp'
     && /^avi[fs]$/.test(bytes.subarray(8, 12).toString('latin1'))],
+  ['application/pdf', (bytes) => bytes.subarray(0, 5).toString('latin1') === '%PDF-'],
 ];
 
 const assetIds = (content) => new Set([...String(content).matchAll(ASSET_REFERENCE)].map((match) => match[1]));
@@ -28,7 +31,7 @@ const sniff = (bytes) => SIGNATURES.find(([, matches]) => matches(bytes))?.[0] |
 
 function createAssets({ fail }) {
   const uploadId = (value) => {
-    if (typeof value !== 'string' || !/^[0-9a-f-]{36}$/.test(value)) fail(400, 'Invalid upload.');
+    if (typeof value !== 'string' || !UPLOAD_ID.test(value)) fail(400, 'Invalid upload.');
     return value;
   };
 
@@ -52,11 +55,13 @@ function createAssets({ fail }) {
     if (ops.length) await ctx.db.tx(ops);
   }
 
-  // Deletes uploads no live note mentions once their grace window has passed; snapshots keep their own copies.
+  // Deletes uploads no note (live, or deleted and still recoverable) or kept version mentions once their grace window has passed;
+  // snapshots keep their own copies.
   function sweep(ctx) {
     const now = Date.now();
     return ctx.db.exec(`DELETE FROM note_assets WHERE (CASE WHEN released_at IS NULL THEN created_at < ? ELSE released_at < ? END)
-      AND NOT EXISTS (SELECT 1 FROM notes WHERE archived = 0 AND instr(content, 'fieldnotes://asset/' || note_assets.id) > 0)`,
+      AND NOT EXISTS (SELECT 1 FROM notes WHERE instr(content, 'fieldnotes://asset/' || note_assets.id) > 0)
+      AND NOT EXISTS (SELECT 1 FROM note_versions WHERE instr(content, 'fieldnotes://asset/' || note_assets.id) > 0)`,
     new Date(now - UNUSED_GRACE_MS).toISOString(), new Date(now - RELEASE_GRACE_MS).toISOString());
   }
 
@@ -65,7 +70,7 @@ function createAssets({ fail }) {
     const [{ total }] = await ctx.db.query(`SELECT (SELECT COALESCE(SUM(size), 0) FROM note_assets)
       + (SELECT COALESCE(SUM(size), 0) FROM snapshot_assets)
       + (SELECT COALESCE(SUM(length(data)), 0) * 3 / 4 FROM asset_uploads WHERE id != ?) AS total`, uploadId);
-    if (total + adding > MAX_STORED_IMAGE_BYTES) fail(413, 'Fieldnotes image storage is full. Remove unused images first.');
+    if (total + adding > MAX_STORED_BYTES) fail(413, 'Fieldnotes storage is full. Remove unused images or PDFs first.');
   }
 
   async function upload(ctx, userId, input) {
@@ -88,8 +93,11 @@ function createAssets({ fail }) {
       return { upload_id: id };
     }
     const bytes = Buffer.from([...stored.map((row) => row.data), data].join(''), 'base64');
-    if (bytes.length > maxImageBytes) fail(413, 'Images must be {size} MB or smaller.', { size: maxImageBytes / 1024 / 1024 });
-    const mimetype = sniff(bytes) || fail(415, 'Upload a PNG, JPEG, GIF, WebP or AVIF image.');
+    const mimetype = sniff(bytes) || fail(415, 'Upload a PNG, JPEG, GIF, WebP or AVIF image, or a PDF.');
+    if (mimetype === 'application/pdf' && bytes.length > maxPdfBytes)
+      fail(413, 'PDFs must be {size} MB or smaller.', { size: maxPdfBytes / 1024 / 1024 });
+    if (mimetype !== 'application/pdf' && bytes.length > maxImageBytes)
+      fail(413, 'Images must be {size} MB or smaller.', { size: maxImageBytes / 1024 / 1024 });
     await sweep(ctx);
     await reserve(ctx, id, bytes.length);
     const assetId = randomUUID();
@@ -106,7 +114,7 @@ function createAssets({ fail }) {
     const match = ASSET_SOURCE.exec(source);
     if (!match) return null;
     const [row] = await ctx.db.query('SELECT mimetype, size, content_base64 FROM note_assets WHERE id = ?', match[1]);
-    return row || fail(404, 'This image was deleted.');
+    return row || fail(404, 'This file was deleted.');
   }
 
   return { referenceOps, track, sweep, upload, read };

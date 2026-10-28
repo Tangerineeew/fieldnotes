@@ -1,4 +1,5 @@
 import { translate, type Vars } from './i18n';
+import { bodyLimitBytes, bodyPartChars } from '../shared/limits.json';
 
 
 export type Invoke = <T>(path: string, options?: { method: string; body: unknown }) => Promise<T>;
@@ -10,8 +11,33 @@ export class RequestError extends Error {
   constructor(message: string, readonly code: number, readonly template: string) { super(message); }
 }
 
+// Base64 for bytes of any size: `String.fromCharCode` takes them in slices, since spreading a large array overflows the stack.
+export function encodeBase64(bytes: Uint8Array) {
+  let binary = '';
+  for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  return btoa(binary);
+}
+export const decodeBase64 = (text: string) => Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
+
 const isEnvelope = (value: unknown): value is Envelope => typeof value === 'object' && value !== null
   && typeof (value as Envelope).error === 'string' && typeof (value as Envelope).status === 'number';
+
+// TREK parses request bodies up to 100 KB, so a larger one goes ahead in parts: slices of its UTF-8 bytes in base64, then
+// `{ parts_id }` in its place. A trip page sends everything through the companion's /trip route, and so its parts.
+export function withParts(invoke: Invoke): Invoke {
+  return async <T,>(path: string, options?: { method: string; body: unknown }) => {
+    const bytes = options?.method === 'POST' ? new TextEncoder().encode(JSON.stringify(options.body)) : null;
+    if (!bytes || bytes.length <= bodyLimitBytes) return invoke<T>(path, options);
+    const encoded = encodeBase64(bytes); const id = crypto.randomUUID(); const parts = Math.ceil(encoded.length / bodyPartChars);
+    for (let part = 0; part < parts; part += 1) {
+      const slice = { id, part, parts, data: encoded.slice(part * bodyPartChars, (part + 1) * bodyPartChars) };
+      const stored = await invoke<unknown>(path === '/trip' ? '/trip' : '/part', { method: 'POST',
+        body: path === '/trip' ? { action: 'part', ...slice } : slice });
+      if (isEnvelope(stored)) return stored as T;
+    }
+    return invoke<T>(path, { method: 'POST', body: { parts_id: id } });
+  };
+}
 
 // TREK's frame bridge turns a failed route into "Request failed with status code N" and drops its body, so the
 // server sends expected failures as a 200 envelope; this raises them again, translated, with their status.

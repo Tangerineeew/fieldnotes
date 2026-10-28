@@ -1,10 +1,22 @@
 {
   "uploadPartChars": 90000,
   "maxImageBytes": 4194304,
-  "maxContentChars": 24000,
-  "maxContentBytes": 40000,
+  "maxPdfBytes": 10485760,
+  "maxContentChars": 200000,
+  "maxContentBytes": 500000,
   "maxPropertiesBytes": 32000,
   "maxCommentChars": 2000,
   "maxQuoteChars": 500,
-  "quoteContextChars": 32
+  "quoteContextChars": 32,
+  "bodyLimitBytes": 90000,
+  "bodyPartChars": 72000,
+  "maxBodyParts": 24,
+  "maxTitleChars": 160,
+  "maxIconChars": 150000,
+  "maxProperties": 30,
+  "maxPropertyOptions": 30,
+  "maxPropertyNameChars": 40,
+  "maxPropertyTextChars": 2000,
+  "maxChecklistItems": 50,
+  "propertyColors": 8
 }

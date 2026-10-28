@@ -7,7 +7,8 @@ const path = require('node:path');
 const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
-const LOCALES = ['zh', 'zh-TW', 'de', 'es', 'fr', 'hu', 'nl', 'br', 'cs', 'pl', 'ru', 'it', 'ar'];
+const LOCALES = ['zh', 'zh-TW', 'de', 'es', 'fr', 'hu', 'nl', 'br', 'cs', 'pl', 'ru', 'it', 'ar',
+  'et', 'sk', 'tr', 'az', 'id', 'ja', 'ko', 'th', 'uk', 'gr', 'sv', 'vi', 'ca'];
 const placeholders = (text) => [...text.matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort();
 
 function sources(dir, pattern) {
@@ -50,13 +51,17 @@ function usedKeys() {
       const [key, zh] = node.arguments;
       if (!['t', 'options.t', 'translate'].includes(callee)) return;
       if (ts.isTemplateExpression(key)) dynamic.push(where(node));
-      else if (ts.isStringLiteralLike(key)) add(key.text, node, callee === 'translate' || !zh || !ts.isStringLiteralLike(zh) ? undefined : zh.text);
+      else if (ts.isStringLiteralLike(key)) {
+        add(key.text, node, callee === 'translate' || !zh || !ts.isStringLiteralLike(zh) ? undefined : zh.text);
+      }
     });
   }
   for (const source of sources('server', /\.cjs$/)) {
     const constants = new Map();
     visit(source, (node) => {
-      if (ts.isVariableDeclaration(node) && node.initializer && ts.isStringLiteralLike(node.initializer)) constants.set(node.name.getText(), node.initializer.text);
+      if (ts.isVariableDeclaration(node) && node.initializer && ts.isStringLiteralLike(node.initializer)) {
+        constants.set(node.name.getText(), node.initializer.text);
+      }
     });
     visit(source, (node) => {
       if (ts.isParameter(node) && node.parent.name?.getText() === 'imageData' && node.initializer) add(node.initializer.text, node);

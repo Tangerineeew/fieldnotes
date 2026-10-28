@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
+import { useDismiss } from './popover';
 import type { Translate } from './i18n';
+import { maxIconChars } from '../shared/limits.json';
 
 
 const SUGGESTED = ['📝', '💡', '📍', '🗺️', '🧳', '✈️', '🚃', '🚄', '🚌', '🚕', '⛴️', '🏨',
   '🍜', '🍣', '☕', '🗾', '🏯', '⛩️', '🗻', '🌸', '🎫', '💴', '🛂', '📶'];
 const IMAGE_SIZE = 128;
-const MAX_ICON_CHARS = 150000;
 const isImage = (icon: string) => icon.startsWith('data:image/');
 // The first user-perceived character, so a flag or ZWJ emoji is never cut in half.
 export const firstGrapheme = (text: string) => new Intl.Segmenter().segment(text)[Symbol.iterator]().next().value?.segment ?? '';
@@ -16,7 +17,7 @@ export function NoteIcon({ icon, className = '' }: { icon?: string | null; class
     : <span className={`fn-note-icon ${className}`} aria-hidden="true">{icon}</span>;
 }
 
-// Center-crops to a square and re-encodes small, so an uploaded photo stays well under the server's 100 KB limit.
+// Center-crops to a square and re-encodes small, so an uploaded photo fits the server's limit of 150,000 characters.
 async function iconFromFile(file: File): Promise<string> {
   const source = await new Promise<HTMLImageElement>((resolve, reject) => {
     const url = URL.createObjectURL(file); const image = new Image();
@@ -31,7 +32,7 @@ async function iconFromFile(file: File): Promise<string> {
       side, side, 0, 0, size, size);
     const encoded = canvas.toDataURL('image/webp', quality);
     const icon = encoded.startsWith('data:image/webp') ? encoded : canvas.toDataURL('image/jpeg', quality);
-    if (icon.length <= MAX_ICON_CHARS) return icon;
+    if (icon.length <= maxIconChars) return icon;
   }
   throw new Error('too-large');
 }
@@ -42,13 +43,8 @@ export function IconPicker({ icon, onChange, t }: { icon: string | null; onChang
   const [problem, setProblem] = useState('');
   const root = useRef<HTMLDivElement>(null);
   const file = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
-    document.addEventListener('pointerdown', close); document.addEventListener('keydown', escape);
-    return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', escape); };
-  }, [open]);
+  const trigger = useRef<HTMLButtonElement>(null);
+  useDismiss(open, root, () => setOpen(false), trigger);
   const choose = (next: string | null) => { onChange(next); setOpen(false); setCustom(''); setProblem(''); };
   async function upload(chosen: File | undefined) {
     if (!chosen) return;
@@ -59,7 +55,7 @@ export function IconPicker({ icon, onChange, t }: { icon: string | null; onChang
     if (file.current) file.current.value = '';
   }
   return <div className="fn-icon-picker" ref={root}>
-    <button type="button" className={`fn-icon-picker-trigger${icon ? ' has-icon' : ''}`}
+    <button ref={trigger} type="button" className={`fn-icon-picker-trigger${icon ? ' has-icon' : ''}`}
       aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
       {icon ? <NoteIcon icon={icon} className="fn-note-icon--large" />
         : <span className="fn-icon-picker-placeholder">{t('+ Add icon', '+ 添加图标')}</span>}

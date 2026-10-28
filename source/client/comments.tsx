@@ -7,8 +7,7 @@ import { maxCommentChars, maxQuoteChars, quoteContextChars } from '../shared/lim
 
 export type Comment = {
   id: string; parent_id: string | null; author_id: number; author?: Person; body: string; quote: string | null;
-  prefix: string | null; suffix: string | null; created_at: string; updated_at: string; resolved_at: string | null;
-  resolved_by: number | null
+  prefix: string | null; suffix: string | null; created_at: string; updated_at: string; resolved_at: string | null
 };
 export type Anchor = { quote: string; prefix: string; suffix: string };
 export type Thread = { root: Comment; replies: Comment[] };
@@ -28,7 +27,7 @@ function textNodes(root: HTMLElement) {
 }
 
 // What the reader selected, plus the characters around it that tell repeated passages apart.
-export function anchorOf(root: HTMLElement, range: Range): Anchor | null {
+function anchorOf(root: HTMLElement, range: Range): Anchor | null {
   if (range.collapsed || !root.contains(range.commonAncestorContainer)) return null;
   const quote = range.toString().trim();
   if (!quote) return null;
@@ -39,7 +38,7 @@ export function anchorOf(root: HTMLElement, range: Range): Anchor | null {
 }
 
 // The occurrence of the quote whose surroundings match best, or -1 once the text no longer contains it.
-export function locate(text: string, anchor: Anchor) {
+function locate(text: string, anchor: Anchor) {
   const shared = (a: string, b: string, fromEnd: boolean) => {
     let n = 0;
     while (n < a.length && n < b.length && (fromEnd ? a[a.length - 1 - n] === b[b.length - 1 - n] : a[n] === b[n])) n += 1;
@@ -196,6 +195,8 @@ export function CommentPanel({ open, threads, located, pending, activeId, userId
   const [showResolved, setShowResolved] = useState(false);
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const panel = useRef<HTMLElement>(null);
+  // The thread to scroll to once it is rendered: one on the other tab switches tabs first.
+  const [reveal, setReveal] = useState<string | null>(null);
   const unresolved = threads.filter((thread) => !thread.root.resolved_at);
   const resolved = threads.filter((thread) => thread.root.resolved_at);
   const shown = showResolved ? resolved : unresolved;
@@ -203,14 +204,19 @@ export function CommentPanel({ open, threads, located, pending, activeId, userId
     if (!activeId) return;
     const elsewhere = threads.some((thread) => thread.root.id === activeId && Boolean(thread.root.resolved_at) !== showResolved);
     if (elsewhere) setShowResolved(!showResolved);
-    panel.current?.querySelector(`[data-thread="${activeId}"]`)?.scrollIntoView({ block: 'nearest' });
+    setReveal(activeId);
   }, [activeId]);
+  useEffect(() => {
+    if (!reveal) return;
+    panel.current?.querySelector(`[data-thread="${reveal}"]`)?.scrollIntoView({ block: 'nearest' });
+    setReveal(null);
+  }, [reveal]);
   // Stays mounted while closed so it can animate out; `inert` keeps it out of focus and the accessibility tree meanwhile.
   return <aside ref={panel} className="fn-comment-panel" aria-labelledby="comments-heading" data-open={open || undefined} inert={!open}>
     <div className="fn-comment-panel-header">
       <h3 id="comments-heading">{t('Comments', '评论')}</h3>
       <button type="button" className="trek-btn trek-btn--ghost fn-icon-button" aria-label={t('Close comments', '关闭评论')}
-        title={t('Close comments', '关闭评论')} onClick={onClose}>×</button>
+        title={t('Close comments', '关闭评论')} onClick={onClose}><Icon name="close" /></button>
     </div>
     <div className="trek-segmented fn-comment-tabs" role="group" aria-label={t('Comment status', '评论状态')}>
       <button type="button" aria-pressed={!showResolved} onClick={() => setShowResolved(false)}>
