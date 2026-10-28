@@ -4,7 +4,7 @@ import { keymap } from '@codemirror/view';
 import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next';
 import type { Extension } from '@codemirror/state';
 import type { Property } from './properties';
-import type { Invoke } from './api';
+import { RequestError, decodeBase64, encodeBase64, type Invoke } from './api';
 
 
 // Polling cadence: fast while someone else is in the note, slow when alone, quick flush after local edits.
@@ -19,10 +19,7 @@ const MAX_BACKOFF_MS = 15000;
 export type Peer = { client_id: number; user_id: number; name: string; color: string };
 export type CollabStatus = 'connecting' | 'synced' | 'saving' | 'offline' | 'failed';
 type SyncResult = { seq: number; state?: string; updates: string[]; presence: (Peer & { cursor: unknown })[] };
-type JoinResult = SyncResult & { me: { name: string; color: string }; version: number };
-
-const encode = (bytes: Uint8Array) => { let text = ''; for (const byte of bytes) text += String.fromCharCode(byte); return btoa(text); };
-const decode = (text: string) => Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
+type JoinResult = SyncResult & { me: { name: string; color: string } };
 
 export class CollabSession {
   readonly doc = new Y.Doc();
@@ -31,9 +28,10 @@ export class CollabSession {
   readonly properties = this.doc.getMap<Property & { position: number }>('properties');
   readonly meta = this.doc.getMap<string>('meta');
   readonly awareness = new Awareness(this.doc);
-  peers: Peer[] = [];
   status: CollabStatus = 'connecting';
   private seq = -1;
+  // Who else is in the note, which sets how often to sync; their cursors are drawn from Awareness.
+  private peers = 0;
   private pending: Uint8Array[] = [];
   private timer = 0;
   private inFlight: Promise<void> | null = null;
@@ -41,6 +39,7 @@ export class CollabSession {
   private lastSync = 0;
   private stopped = false;
   private closed = false;
+  private touched = false;
   // Background tabs get their timers throttled; catch up the moment the tab is visible again.
   private readonly onVisible = () => { if (document.visibilityState === 'visible' && !this.stopped) void this.sync(); };
 
@@ -48,7 +47,7 @@ export class CollabSession {
     private readonly onFailure: (message: string) => void) {
     this.doc.on('update', (update: Uint8Array, origin: unknown) => {
       if (origin === 'remote') return;
-      this.pending.push(update); this.setStatus('saving'); this.schedule(FLUSH_MS);
+      this.touched = true; this.pending.push(update); this.setStatus('saving'); this.schedule(FLUSH_MS);
     });
   }
 
@@ -62,8 +61,8 @@ export class CollabSession {
 
   private apply(result: SyncResult) {
     Y.transact(this.doc, () => {
-      if (result.state) Y.applyUpdate(this.doc, decode(result.state), 'remote');
-      for (const update of result.updates) Y.applyUpdate(this.doc, decode(update), 'remote');
+      if (result.state) Y.applyUpdate(this.doc, decodeBase64(result.state), 'remote');
+      for (const update of result.updates) Y.applyUpdate(this.doc, decodeBase64(update), 'remote');
     }, 'remote');
     this.seq = result.seq;
     this.applyPresence(result.presence);
@@ -83,8 +82,7 @@ export class CollabSession {
     const gone = [...this.awareness.states.keys()].filter((id) => id !== this.doc.clientID && !live.has(id));
     if (gone.length) removeAwarenessStates(this.awareness, gone, 'remote');
     if (added.length || updated.length) this.awareness.emit('change', [{ added, updated, removed: [] }, 'remote']);
-    const peers = presence.map(({ cursor: _cursor, ...peer }) => peer);
-    if (JSON.stringify(peers) !== JSON.stringify(this.peers)) { this.peers = peers; this.onChange(this); }
+    this.peers = presence.length;
   }
 
   async start() {
@@ -93,7 +91,7 @@ export class CollabSession {
     this.awareness.setLocalStateField('user', { name: joined.me.name, color: joined.me.color, colorLight: `${joined.me.color}33` });
     this.setStatus('synced');
     document.addEventListener('visibilitychange', this.onVisible);
-    this.schedule(this.peers.length ? WITH_OTHERS_MS : ALONE_MS);
+    this.schedule(this.peers ? WITH_OTHERS_MS : ALONE_MS);
   }
 
   private schedule(delay: number) {
@@ -112,16 +110,16 @@ export class CollabSession {
     window.clearTimeout(this.timer);
     this.lastSync = Date.now();
     const batch = this.pending.splice(0);
-    const updates = batch.length ? [encode(Y.mergeUpdates(batch))] : [];
+    const updates = batch.length ? [encodeBase64(Y.mergeUpdates(batch))] : [];
     try {
       const result = await this.post<SyncResult>('sync', { since: this.seq, updates,
         cursor: this.awareness.getLocalState()?.cursor ?? null });
       this.failures = 0; this.apply(result);
       this.setStatus(this.pending.length ? 'saving' : 'synced');
     } catch (error) {
-      // TREK reports the HTTP status as `code`. A 4xx (invalid content, lost access, out of sync) is final;
+      // A request error carries its HTTP status. A 4xx (invalid content, lost access, out of sync) is final;
       // network errors, 5xx and throttling (408/429) are retried with backoff.
-      const code = Number((error as { code?: unknown }).code);
+      const code = error instanceof RequestError ? error.code : 0;
       const message = error instanceof Error ? error.message : String(error);
       if (code >= 400 && code < 500 && code !== 408 && code !== 429) {
         this.stopped = true; this.setStatus('failed'); this.onFailure(message);
@@ -131,10 +129,12 @@ export class CollabSession {
       this.schedule(Math.min(MAX_BACKOFF_MS, 1000 * 2 ** this.failures));
       return;
     }
-    this.schedule(this.pending.length ? FLUSH_MS : this.peers.length ? WITH_OTHERS_MS : ALONE_MS);
+    this.schedule(this.pending.length ? FLUSH_MS : this.peers ? WITH_OTHERS_MS : ALONE_MS);
   }
 
   get unsaved() { return this.pending.length > 0 || this.inFlight !== null; }
+  // Whether this visit changed anything, so leaving says "saved" only when there was something to save.
+  get edited() { return this.touched; }
 
   editorExtensions(): Extension[] {
     return [yCollab(this.content, this.awareness), keymap.of(yUndoManagerKeymap)];

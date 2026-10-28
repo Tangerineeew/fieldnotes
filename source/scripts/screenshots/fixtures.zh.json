@@ -1,0 +1,665 @@
+{
+  "actingUserId": 1,
+  "trips": {
+    "10": {
+      "members": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "data": {
+        "id": 10,
+        "user_id": 1,
+        "title": "云南春日"
+      },
+      "days": [
+        {
+          "id": 101,
+          "trip_id": 10,
+          "day_number": 1,
+          "date": "2026-04-01",
+          "title": "抵达昆明",
+          "assignments": [
+            {
+              "id": 1,
+              "day_id": 101,
+              "place_id": 606,
+              "order_index": 0,
+              "assignment_time": "14:30",
+              "place": {
+                "id": 606,
+                "trip_id": 10,
+                "name": "翠湖宾馆",
+                "category": {
+                  "id": 7,
+                  "name": "住宿",
+                  "icon": "🛏️",
+                  "color": "#64748b"
+                },
+                "lat": 25.0498,
+                "lng": 102.7041,
+                "address": "昆明市翠湖南路 6 号"
+              }
+            },
+            {
+              "id": 2,
+              "day_id": 101,
+              "place_id": 601,
+              "order_index": 1,
+              "assignment_time": "16:00",
+              "place": {
+                "id": 601,
+                "trip_id": 10,
+                "name": "翠湖公园",
+                "category": {
+                  "id": 8,
+                  "name": "自然",
+                  "icon": "🏞️",
+                  "color": "#10b981"
+                },
+                "lat": 25.0516,
+                "lng": 102.7058,
+                "address": "昆明市翠湖南路"
+              }
+            },
+            {
+              "id": 3,
+              "day_id": 101,
+              "place_id": 602,
+              "order_index": 2,
+              "assignment_time": null,
+              "place": {
+                "id": 602,
+                "trip_id": 10,
+                "name": "文林街",
+                "category": {
+                  "id": 4,
+                  "name": "美食",
+                  "icon": "🍜",
+                  "color": "#f59e0b"
+                },
+                "lat": 25.0573,
+                "lng": 102.7029,
+                "address": "昆明市文林街"
+              }
+            },
+            {
+              "id": 4,
+              "day_id": 101,
+              "place_id": 603,
+              "order_index": 3,
+              "assignment_time": "18:30",
+              "place": {
+                "id": 603,
+                "trip_id": 10,
+                "name": "金马碧鸡坊",
+                "category": {
+                  "id": 3,
+                  "name": "历史文化",
+                  "icon": "🏛️",
+                  "color": "#8b5cf6"
+                },
+                "lat": 25.0332,
+                "lng": 102.711,
+                "address": "昆明市金碧路"
+              }
+            }
+          ]
+        },
+        {
+          "id": 102,
+          "trip_id": 10,
+          "day_number": 2,
+          "date": "2026-04-02",
+          "title": "石林一日",
+          "assignments": [
+            {
+              "id": 5,
+              "day_id": 102,
+              "place_id": 604,
+              "order_index": 0,
+              "assignment_time": "08:30",
+              "place": {
+                "id": 604,
+                "trip_id": 10,
+                "name": "石林",
+                "category": {
+                  "id": 8,
+                  "name": "自然",
+                  "icon": "🏞️",
+                  "color": "#10b981"
+                },
+                "lat": 24.8144,
+                "lng": 103.3253,
+                "address": "昆明市石林县"
+              }
+            },
+            {
+              "id": 6,
+              "day_id": 102,
+              "place_id": 605,
+              "order_index": 1,
+              "assignment_time": "19:00",
+              "place": {
+                "id": 605,
+                "trip_id": 10,
+                "name": "建新园",
+                "category": {
+                  "id": 4,
+                  "name": "美食",
+                  "icon": "🍜",
+                  "color": "#f59e0b"
+                },
+                "lat": 25.0402,
+                "lng": 102.7093,
+                "address": "昆明市宝善街"
+              }
+            }
+          ]
+        },
+        {
+          "id": 103,
+          "trip_id": 10,
+          "day_number": 3,
+          "date": "2026-04-03",
+          "title": "前往大理",
+          "assignments": [
+            {
+              "id": 7,
+              "day_id": 103,
+              "place_id": 610,
+              "order_index": 0,
+              "assignment_time": "13:30",
+              "place": {
+                "id": 610,
+                "trip_id": 10,
+                "name": "洱海边客栈",
+                "category": {
+                  "id": 7,
+                  "name": "住宿",
+                  "icon": "🛏️",
+                  "color": "#64748b"
+                },
+                "lat": 25.785,
+                "lng": 100.25,
+                "address": "大理市才村"
+              }
+            },
+            {
+              "id": 8,
+              "day_id": 103,
+              "place_id": 607,
+              "order_index": 1,
+              "assignment_time": "16:00",
+              "place": {
+                "id": 607,
+                "trip_id": 10,
+                "name": "洱海",
+                "category": {
+                  "id": 5,
+                  "name": "观景",
+                  "icon": "🗻",
+                  "color": "#0ea5e9"
+                },
+                "lat": 25.769,
+                "lng": 100.261,
+                "address": "大理"
+              }
+            },
+            {
+              "id": 9,
+              "day_id": 103,
+              "place_id": 608,
+              "order_index": 2,
+              "assignment_time": "19:00",
+              "place": {
+                "id": 608,
+                "trip_id": 10,
+                "name": "大理古城",
+                "category": {
+                  "id": 3,
+                  "name": "历史文化",
+                  "icon": "🏛️",
+                  "color": "#8b5cf6"
+                },
+                "lat": 25.693,
+                "lng": 100.164,
+                "address": "大理市"
+              }
+            }
+          ]
+        },
+        {
+          "id": 104,
+          "trip_id": 10,
+          "day_number": 4,
+          "date": "2026-04-04",
+          "title": "环洱海",
+          "assignments": [
+            {
+              "id": 10,
+              "day_id": 104,
+              "place_id": 609,
+              "order_index": 0,
+              "assignment_time": "10:00",
+              "place": {
+                "id": 609,
+                "trip_id": 10,
+                "name": "喜洲古镇",
+                "category": {
+                  "id": 3,
+                  "name": "历史文化",
+                  "icon": "🏛️",
+                  "color": "#8b5cf6"
+                },
+                "lat": 25.853,
+                "lng": 100.135,
+                "address": "大理市喜洲镇"
+              }
+            }
+          ]
+        },
+        {
+          "id": 105,
+          "trip_id": 10,
+          "day_number": 5,
+          "date": "2026-04-05",
+          "title": "玉龙雪山",
+          "assignments": [
+            {
+              "id": 11,
+              "day_id": 105,
+              "place_id": 611,
+              "order_index": 0,
+              "assignment_time": "08:00",
+              "place": {
+                "id": 611,
+                "trip_id": 10,
+                "name": "玉龙雪山",
+                "category": {
+                  "id": 5,
+                  "name": "观景",
+                  "icon": "🗻",
+                  "color": "#0ea5e9"
+                },
+                "lat": 27.1,
+                "lng": 100.18,
+                "address": "丽江市"
+              }
+            }
+          ]
+        }
+      ],
+      "files": [
+        {
+          "id": 41,
+          "trip_id": 10,
+          "filename": "a1b2.pdf",
+          "original_name": "大理客栈预订确认.pdf",
+          "mime_type": "application/pdf",
+          "mimetype": "application/pdf",
+          "file_size": 5054,
+          "created_at": "2026-03-20T09:00:00Z",
+          "content_base64": "JVBERi0xLjMKJZOMi54gUmVwb3J0TGFiIEdlbmVyYXRlZCBQREYgZG9jdW1lbnQgKG9wZW5zb3VyY2UpCjEgMCBvYmoKPDwKL0YxIDIgMCBSIC9GMiAzIDAgUiAvRjMgNCAwIFIgL0Y0IDUgMCBSCj4+CmVuZG9iagoyIDAgb2JqCjw8Ci9CYXNlRm9udCAvSGVsdmV0aWNhIC9FbmNvZGluZyAvV2luQW5zaUVuY29kaW5nIC9OYW1lIC9GMSAvU3VidHlwZSAvVHlwZTEgL1R5cGUgL0ZvbnQKPj4KZW5kb2JqCjMgMCBvYmoKPDwKL0Jhc2VGb250IC9IZWx2ZXRpY2EtQm9sZCAvRW5jb2RpbmcgL1dpbkFuc2lFbmNvZGluZyAvTmFtZSAvRjIgL1N1YnR5cGUgL1R5cGUxIC9UeXBlIC9Gb250Cj4+CmVuZG9iago0IDAgb2JqCjw8Ci9CYXNlRm9udCAvSGVpc2VpTWluLVczIC9EZXNjZW5kYW50Rm9udHMgWyA8PAovQmFzZUZvbnQgL0hlaXNlaU1pbi1XMyAvQ0lEU3lzdGVtSW5mbyA8PAovT3JkZXJpbmcgKEphcGFuMSkgL1JlZ2lzdHJ5IChBZG9iZSkgL1N1cHBsZW1lbnQgMgo+PiAvRFcgMTAwMCAvRm9udERlc2NyaXB0b3IgPDwKL0FzY2VudCA3MjMgL0NhcEhlaWdodCA3MDkgL0Rlc2NlbnQgLTI0MSAvRmxhZ3MgNiAvRm9udEJCb3ggWyAtMTIzIC0yNTcgMTAwMSA5MTAgXSAvRm9udE5hbWUgL0hlaXNlaU1pbi1XMyAKICAvSXRhbGljQW5nbGUgMCAvU3RlbVYgNjkgL1R5cGUgL0ZvbnREZXNjcmlwdG9yIC9YSGVpZ2h0IDQ1MAo+PiAvU3VidHlwZSAvQ0lERm9udFR5cGUwIC9UeXBlIC9Gb250IAogIC9XIFsgMSBbIDI1MCAzMzMgNDA4IDUwMCBdIDUgWyA1MDAgODMzIDc3OCAxODAgMzMzIF0gMTAgWyAzMzMgNTAwIDU2NCAyNTAgMzMzIDI1MCAyNzggNTAwIF0gMTggMjYgNTAwIDI3IAogIDI4IDI3OCAyOSAzMSA1NjQgMzIgWyA0NDQgOTIxIDcyMiA2NjcgXSAzNiBbIDY2NyA3MjIgNjExIDU1NiA3MjIgXSA0MSAKICBbIDcyMiAzMzMgMzg5IDcyMiA2MTEgODg5IDcyMiBdIDQ4IFsgNzIyIDU1NiA3MjIgNjY3IDU1NiA2MTEgNzIyIF0gNTUgWyA3MjIgOTQ0IDcyMiBdIDU4IFsgNzIyIDYxMSAzMzMgNTAwIDMzMyA0NjkgNTAwIDMzMyA0NDQgNTAwIAogIDQ0NCA1MDAgNDQ0IDMzMyA1MDAgXSA3MyBbIDUwMCAyNzggXSA3NSAKICBbIDI3OCA1MDAgMjc4IDc3OCA1MDAgXSA4MCA4MiA1MDAgODMgWyAzMzMgMzg5IDI3OCA1MDAgXSA4NyBbIDUwMCA3MjIgNTAwIF0gOTAgWyA1MDAgNDQ0IDQ4MCAyMDAgNDgwIDMzMyBdIAogIDk3IFsgMjc4IF0gOTkgWyAyMDAgXSAxMDEgWyAzMzMgNTAwIF0gMTAzIFsgNTAwIDE2NyBdIDEwNyBbIDUwMCBdIAogIDEwOSBbIDUwMCAzMzMgXSAxMTEgWyAzMzMgNTU2IF0gMTEzIFsgNTU2IDUwMCBdIDExNyBbIDI1MCBdIDExOSBbIDM1MCAzMzMgNDQ0IF0gCiAgMTIzIFsgNTAwIF0gMTI2IFsgNDQ0IDMzMyBdIDEyOCAxMzcgMzMzIDEzOCBbIDEwMDAgODg5IDI3NiA2MTEgNzIyIDg4OSAzMTAgNjY3IDI3OCBdIDE0NyAKICBbIDI3OCA1MDAgNzIyIDUwMCA1NjQgNzYwIDU2NCA3NjAgXSAxNTcgMTU4IDMwMCAxNTkgWyA1MDAgMzAwIDc1MCBdIDE2MiAxNjMgNzUwIDE2NCAKICAxNjkgNzIyIDE3MCBbIDY2NyA2MTEgXSAxNzIgMTc0IDYxMSAxNzUgMTc4IDMzMyAKICAxNzkgMTg1IDcyMiAxODcgMTkxIDcyMiAxOTIgWyA1NTYgNDQ0IF0gMTk0IDIwMyAKICA0NDQgMjA0IDIwNyAyNzggMjA4IDIxNCA1MDAgMjE2IDIyMiA1MDAgCiAgMjIzIFsgNTU2IDcyMiA2MTEgNTAwIDM4OSA5ODAgNDQ0IF0gMjMxIFsgNTAwIF0gMzIzIFsgNTAwIF0gMzI1IFsgNTAwIF0gMzI3IDM4OSAKICA1MDAgXQo+PiBdIC9FbmNvZGluZyAvVW5pSklTLVVDUzItSCAvTmFtZSAvRjMgL1N1YnR5cGUgL1R5cGUwIC9UeXBlIC9Gb250Cj4+CmVuZG9iago1IDAgb2JqCjw8Ci9CYXNlRm9udCAvVGltZXMtUm9tYW4gL0VuY29kaW5nIC9XaW5BbnNpRW5jb2RpbmcgL05hbWUgL0Y0IC9TdWJ0eXBlIC9UeXBlMSAvVHlwZSAvRm9udAo+PgplbmRvYmoKNiAwIG9iago8PAovQ29udGVudHMgMTIgMCBSIC9NZWRpYUJveCBbIDAgMCA1OTUuMjc1NiA4NDEuODg5OCBdIC9QYXJlbnQgMTEgMCBSIC9SZXNvdXJjZXMgPDwKL0ZvbnQgMSAwIFIgL1Byb2NTZXQgWyAvUERGIC9UZXh0IC9JbWFnZUIgL0ltYWdlQyAvSW1hZ2VJIF0KPj4gL1JvdGF0ZSAwIC9UcmFucyA8PAoKPj4gCiAgL1R5cGUgL1BhZ2UKPj4KZW5kb2JqCjcgMCBvYmoKPDwKL0NvbnRlbnRzIDEzIDAgUiAvTWVkaWFCb3ggWyAwIDAgNTk1LjI3NTYgODQxLjg4OTggXSAvUGFyZW50IDExIDAgUiAvUmVzb3VyY2VzIDw8Ci9Gb250IDEgMCBSIC9Qcm9jU2V0IFsgL1BERiAvVGV4dCAvSW1hZ2VCIC9JbWFnZUMgL0ltYWdlSSBdCj4+IC9Sb3RhdGUgMCAvVHJhbnMgPDwKCj4+IAogIC9UeXBlIC9QYWdlCj4+CmVuZG9iago4IDAgb2JqCjw8Ci9Db250ZW50cyAxNCAwIFIgL01lZGlhQm94IFsgMCAwIDU5NS4yNzU2IDg0MS44ODk4IF0gL1BhcmVudCAxMSAwIFIgL1Jlc291cmNlcyA8PAovRm9udCAxIDAgUiAvUHJvY1NldCBbIC9QREYgL1RleHQgL0ltYWdlQiAvSW1hZ2VDIC9JbWFnZUkgXQo+PiAvUm90YXRlIDAgL1RyYW5zIDw8Cgo+PiAKICAvVHlwZSAvUGFnZQo+PgplbmRvYmoKOSAwIG9iago8PAovUGFnZU1vZGUgL1VzZU5vbmUgL1BhZ2VzIDExIDAgUiAvVHlwZSAvQ2F0YWxvZwo+PgplbmRvYmoKMTAgMCBvYmoKPDwKL0F1dGhvciAoYW5vbnltb3VzKSAvQ3JlYXRpb25EYXRlIChEOjIwMjYxMDI3MTY0MTEyKzA4JzAwJykgL0NyZWF0b3IgKGFub255bW91cykgL0tleXdvcmRzICgpIC9Nb2REYXRlIChEOjIwMjYxMDI3MTY0MTEyKzA4JzAwJykgL1Byb2R1Y2VyIChSZXBvcnRMYWIgUERGIExpYnJhcnkgLSBcKG9wZW5zb3VyY2VcKSkgCiAgL1N1YmplY3QgKHVuc3BlY2lmaWVkKSAvVGl0bGUgKHVudGl0bGVkKSAvVHJhcHBlZCAvRmFsc2UKPj4KZW5kb2JqCjExIDAgb2JqCjw8Ci9Db3VudCAzIC9LaWRzIFsgNiAwIFIgNyAwIFIgOCAwIFIgXSAvVHlwZSAvUGFnZXMKPj4KZW5kb2JqCjEyIDAgb2JqCjw8Ci9GaWx0ZXIgWyAvQVNDSUk4NURlY29kZSAvRmxhdGVEZWNvZGUgXSAvTGVuZ3RoIDQzMgo+PgpzdHJlYW0KR2FzMVs+dGAnaCdSZWxCMzUvK2w/I2wuO0Ysc2ZcTGtva20kcHBNIT0nXGFBbE9ebzREVVFmakZcJVpfbV8rQz5xW2o+IyhAUTNGIWBPZyMiVT9FUiRzXE4ibDVKaSNkLm4hdHEnazFwbzt0RilPR2smVk07YmhBU2RMcnM9a1RtVGJIcmlOJE8iN2RSTihhWTMvMmE0M25ZcWluQDNpOC8+VTIrWjteYkcqOFlBZ2xwRVFVaF9aWT8vOlhCZk1oSlgpQkk1LVdFTkRdRyZtUGVbM0FTTDctREtxOk5LTCwvNTwtbG00L1RQKUVMJGpgNisidV9yWE5sWGRfaiJVZkUhbyFeVDNYWFU4b0ZFajI5RjxeNW0/YVIhUjVqY2I+Xz5WT2xeXCpbSFUjSlgiKFEvNTRiQSNycDIiRUxTa0daKzZkVzlOYVszbCxLZ1ZWVl1NM1tFVkUhKitPRlhZbDZBXCw4MTk9KGkiXUJpMUU3J1Eoc2dpZ2VWSVo8XmQsInFwQy8uMCEmYl5TXk9mPEQ4JW47O1l0dWY8PyRSbFo+QzlDLSVqI11iOjkkZX4+ZW5kc3RyZWFtCmVuZG9iagoxMyAwIG9iago8PAovRmlsdGVyIFsgL0FTQ0lJODVEZWNvZGUgL0ZsYXRlRGVjb2RlIF0gL0xlbmd0aCA0MzIKPj4Kc3RyZWFtCkdhczFbPnRgJ2gnUmVsQjM1LytsPyNsLjtGLHNmXExrb2ttJHBwTSE9J1xhQWxPXm80RFVRZmpGXCVaX21fK0M+cVtqPiMoQFEzRiFgT2cjIlU/RVIkc1xOImw1SmkjZC5uIXRxJ2sxcG87dEYpT0drJlZNO2JoQVNkTHJzPWtUbVRiSHJpTiRPIjdkUk4nVUUqKClrVVNhO1JFR2hmdVcoPUhXJmZkWnI0JVc9MURwN1dAZkRqaDtaUTlTNkQ3RGRoTzFfWitnMyolOl4kKkZHaSoxPmJWJzJgdS5gbFFXKCp1bm5HKlJpZiUzNk1FaytCaUZqSWc8SWdsIWBSO2xpPE9MaHBrPjxkRkFlXm5fbjUuaG9FOUE5WUtdRkI0JmkvO2JxP2kmIUI/TTVZPkpjKCsqbVwiSXMpTFw0ckk0ZlxGcWZWUT9IVUZDV207O3QiO1VnPyw3S05cUzlnPVQ9Yz9PVTIrWSUoM29cbkJXM09iMGVIb21PJ2JoWC5rMSJyRmVRJyhZMUZAOjIvQ1kySURwWFdJNyVEV2Y5O0Zmc1Y0XVAvNiZpYyJXXVN+PmVuZHN0cmVhbQplbmRvYmoKMTQgMCBvYmoKPDwKL0ZpbHRlciBbIC9BU0NJSTg1RGVjb2RlIC9GbGF0ZURlY29kZSBdIC9MZW5ndGggNDMyCj4+CnN0cmVhbQpHYXMxWz50YCdoJ1JlbEIzNS8rbD8jbC47RixzZlxMa29rbSRwcE0hPSdcYUFsT15vNERVUWZqRlwlWl9tXytDPnFbaj4jKEBRM0YhYE9nIyJVP0VSJHNcTiJsNUppI2QubiF0cSdrMXBvO3RGKU9HayZWTTtiaEFTZExycz1rVG1UYkhyaU4kTyI3ZFJOJSdGMy8yYTQzbllxaW5AM2k4Lz5VMitaO15iRyo4WUFnbHBFUVVoX1pZPy86WEJmTWhKWClCSTUtV0VORF1HJm1QZVszQVNMNy1ES3E6TktMLC81PC1sbTQvVFApRUwkamA2KyJ1X3JYTmxYZF9qIlVmRSFvIV5UM1hYVThvRkVqMjlGPF41bT9hUiFSNWpjYj5fPlZPbF5cKltIVSNKWCIoUS81NGJBI3JwMiJFTFNrR1orNmRXOU5hWzNsLEtnVlZWXU0zW0VWRSEqK09GWFlsNkFcLDgxOT0oaSJdQmkxRTcnUShzZ2lnZVZJWjxeZCwicXBDLy4wISZiXlNeT2Y8RDglbjs7WXR1Zjw/JFJsWj5DOUMtJWojXWNgIUFBfj5lbmRzdHJlYW0KZW5kb2JqCnhyZWYKMCAxNQowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwNjEgMDAwMDAgbiAKMDAwMDAwMDEyMiAwMDAwMCBuIAowMDAwMDAwMjI5IDAwMDAwIG4gCjAwMDAwMDAzNDEgMDAwMDAgbiAKMDAwMDAwMTg0NCAwMDAwMCBuIAowMDAwMDAxOTUzIDAwMDAwIG4gCjAwMDAwMDIxNTggMDAwMDAgbiAKMDAwMDAwMjM2MyAwMDAwMCBuIAowMDAwMDAyNTY4IDAwMDAwIG4gCjAwMDAwMDI2MzcgMDAwMDAgbiAKMDAwMDAwMjg5OSAwMDAwMCBuIAowMDAwMDAyOTcxIDAwMDAwIG4gCjAwMDAwMDM0OTQgMDAwMDAgbiAKMDAwMDAwNDAxNyAwMDAwMCBuIAp0cmFpbGVyCjw8Ci9JRCAKWzw5ZWY0N2VmMjM5ZGVhYjQ0ZGZlNWNkNzUxZDdiYzU3Zj48OWVmNDdlZjIzOWRlYWI0NGRmZTVjZDc1MWQ3YmM1N2Y+XQolIFJlcG9ydExhYiBnZW5lcmF0ZWQgUERGIGRvY3VtZW50IC0tIGRpZ2VzdCAob3BlbnNvdXJjZSkKCi9JbmZvIDEwIDAgUgovUm9vdCA5IDAgUgovU2l6ZSAxNQo+PgpzdGFydHhyZWYKNDU0MAolJUVPRgo="
+        }
+      ],
+      "places": [
+        {
+          "id": 601,
+          "trip_id": 10,
+          "name": "翠湖公园",
+          "category": {
+            "id": 8,
+            "name": "自然",
+            "icon": "🏞️",
+            "color": "#10b981"
+          },
+          "lat": 25.0516,
+          "lng": 102.7058,
+          "address": "昆明市翠湖南路"
+        },
+        {
+          "id": 602,
+          "trip_id": 10,
+          "name": "文林街",
+          "category": {
+            "id": 4,
+            "name": "美食",
+            "icon": "🍜",
+            "color": "#f59e0b"
+          },
+          "lat": 25.0573,
+          "lng": 102.7029,
+          "address": "昆明市文林街"
+        },
+        {
+          "id": 603,
+          "trip_id": 10,
+          "name": "金马碧鸡坊",
+          "category": {
+            "id": 3,
+            "name": "历史文化",
+            "icon": "🏛️",
+            "color": "#8b5cf6"
+          },
+          "lat": 25.0332,
+          "lng": 102.711,
+          "address": "昆明市金碧路"
+        },
+        {
+          "id": 604,
+          "trip_id": 10,
+          "name": "石林",
+          "category": {
+            "id": 8,
+            "name": "自然",
+            "icon": "🏞️",
+            "color": "#10b981"
+          },
+          "lat": 24.8144,
+          "lng": 103.3253,
+          "address": "昆明市石林县"
+        },
+        {
+          "id": 605,
+          "trip_id": 10,
+          "name": "建新园",
+          "category": {
+            "id": 4,
+            "name": "美食",
+            "icon": "🍜",
+            "color": "#f59e0b"
+          },
+          "lat": 25.0402,
+          "lng": 102.7093,
+          "address": "昆明市宝善街"
+        },
+        {
+          "id": 606,
+          "trip_id": 10,
+          "name": "翠湖宾馆",
+          "category": {
+            "id": 7,
+            "name": "住宿",
+            "icon": "🛏️",
+            "color": "#64748b"
+          },
+          "lat": 25.0498,
+          "lng": 102.7041,
+          "address": "昆明市翠湖南路 6 号"
+        },
+        {
+          "id": 607,
+          "trip_id": 10,
+          "name": "洱海",
+          "category": {
+            "id": 5,
+            "name": "观景",
+            "icon": "🗻",
+            "color": "#0ea5e9"
+          },
+          "lat": 25.769,
+          "lng": 100.261,
+          "address": "大理"
+        },
+        {
+          "id": 608,
+          "trip_id": 10,
+          "name": "大理古城",
+          "category": {
+            "id": 3,
+            "name": "历史文化",
+            "icon": "🏛️",
+            "color": "#8b5cf6"
+          },
+          "lat": 25.693,
+          "lng": 100.164,
+          "address": "大理市"
+        },
+        {
+          "id": 609,
+          "trip_id": 10,
+          "name": "喜洲古镇",
+          "category": {
+            "id": 3,
+            "name": "历史文化",
+            "icon": "🏛️",
+            "color": "#8b5cf6"
+          },
+          "lat": 25.853,
+          "lng": 100.135,
+          "address": "大理市喜洲镇"
+        },
+        {
+          "id": 610,
+          "trip_id": 10,
+          "name": "洱海边客栈",
+          "category": {
+            "id": 7,
+            "name": "住宿",
+            "icon": "🛏️",
+            "color": "#64748b"
+          },
+          "lat": 25.785,
+          "lng": 100.25,
+          "address": "大理市才村"
+        },
+        {
+          "id": 611,
+          "trip_id": 10,
+          "name": "玉龙雪山",
+          "category": {
+            "id": 5,
+            "name": "观景",
+            "icon": "🗻",
+            "color": "#0ea5e9"
+          },
+          "lat": 27.1,
+          "lng": 100.18,
+          "address": "丽江市"
+        }
+      ],
+      "reservations": [
+        {
+          "id": 71,
+          "trip_id": 10,
+          "type": "flight",
+          "title": "上海浦东 → 昆明长水",
+          "status": "confirmed",
+          "confirmation_number": "MU7K2D",
+          "reservation_time": "2026-04-01T08:35",
+          "reservation_end_time": "2026-04-01T12:10",
+          "day_id": 101,
+          "day_positions": {
+            "101": 0.5
+          },
+          "metadata": "{\"airline\":\"东方航空\",\"flight_number\":\"MU5801\",\"seat\":\"32A\",\"departure_timezone\":\"Asia/Shanghai\",\"arrival_timezone\":\"Asia/Shanghai\"}",
+          "endpoints": [
+            {
+              "role": "from",
+              "name": "上海浦东",
+              "code": "PVG",
+              "local_time": "08:35",
+              "local_date": "2026-04-01",
+              "timezone": "Asia/Shanghai"
+            },
+            {
+              "role": "to",
+              "name": "昆明长水",
+              "code": "KMG",
+              "local_time": "12:10",
+              "local_date": "2026-04-01",
+              "timezone": "Asia/Shanghai"
+            }
+          ]
+        },
+        {
+          "id": 72,
+          "trip_id": 10,
+          "type": "event",
+          "title": "石林门票",
+          "status": "pending",
+          "reservation_time": "2026-04-02T08:30",
+          "day_id": 102,
+          "assignment_id": 5,
+          "location": "昆明市石林县"
+        },
+        {
+          "id": 73,
+          "trip_id": 10,
+          "type": "restaurant",
+          "title": "建新园",
+          "status": "confirmed",
+          "confirmation_number": "R-2046",
+          "reservation_time": "2026-04-02T19:00",
+          "reservation_end_time": "2026-04-02T20:30",
+          "day_id": 102,
+          "assignment_id": 6,
+          "location": "昆明市宝善街"
+        },
+        {
+          "id": 74,
+          "trip_id": 10,
+          "type": "hotel",
+          "title": "翠湖宾馆",
+          "status": "confirmed",
+          "accommodation_id": 31,
+          "confirmation_number": "5520873",
+          "day_id": 101
+        },
+        {
+          "id": 75,
+          "trip_id": 10,
+          "type": "train",
+          "title": "昆明南 → 大理",
+          "status": "confirmed",
+          "reservation_time": "2026-04-03T09:10",
+          "reservation_end_time": "2026-04-03T11:15",
+          "day_id": 103,
+          "day_positions": {
+            "103": 0.5
+          },
+          "metadata": "{\"train_number\":\"D8662\",\"seat\":\"5 车 08F\"}",
+          "endpoints": [
+            {
+              "role": "from",
+              "name": "昆明南",
+              "local_time": "09:10",
+              "local_date": "2026-04-03"
+            },
+            {
+              "role": "to",
+              "name": "大理",
+              "local_time": "11:15",
+              "local_date": "2026-04-03"
+            }
+          ]
+        },
+        {
+          "id": 76,
+          "trip_id": 10,
+          "type": "hotel",
+          "title": "洱海边客栈",
+          "status": "confirmed",
+          "accommodation_id": 32,
+          "confirmation_number": "DL0412",
+          "day_id": 103
+        }
+      ],
+      "accommodations": [
+        {
+          "id": 31,
+          "trip_id": 10,
+          "place_id": 606,
+          "start_day_id": 101,
+          "end_day_id": 103,
+          "check_in": "14:00",
+          "check_out": "12:00",
+          "confirmation": "5520873",
+          "place_name": "翠湖宾馆",
+          "place_address": "昆明市翠湖南路 6 号",
+          "place_lat": 25.0498,
+          "place_lng": 102.7041
+        },
+        {
+          "id": 32,
+          "trip_id": 10,
+          "place_id": 610,
+          "start_day_id": 103,
+          "end_day_id": 105,
+          "check_in": "14:00",
+          "check_out": "12:00",
+          "confirmation": "DL0412",
+          "place_name": "洱海边客栈",
+          "place_address": "大理市才村",
+          "place_lat": 25.785,
+          "place_lng": 100.25
+        }
+      ]
+    },
+    "20": {
+      "members": [
+        1,
+        2,
+        4
+      ],
+      "data": {
+        "id": 20,
+        "user_id": 1,
+        "title": "首尔周末"
+      },
+      "days": [
+        {
+          "id": 201,
+          "trip_id": 20,
+          "date": "2026-11-01",
+          "title": "首尔"
+        }
+      ]
+    },
+    "30": {
+      "members": [
+        1,
+        3,
+        5
+      ],
+      "data": {
+        "id": 30,
+        "user_id": 1,
+        "title": "京都秋日"
+      },
+      "days": [
+        {
+          "id": 301,
+          "trip_id": 30,
+          "date": "2026-11-15",
+          "title": "京都"
+        }
+      ]
+    }
+  },
+  "users": {
+    "1": {
+      "id": 1,
+      "display_name": "橘子"
+    },
+    "2": {
+      "id": 2,
+      "display_name": "小周"
+    },
+    "3": {
+      "id": 3,
+      "display_name": "阿雅"
+    },
+    "4": {
+      "id": 4,
+      "display_name": "阿健"
+    },
+    "5": {
+      "id": 5,
+      "display_name": "诺拉"
+    }
+  }
+}

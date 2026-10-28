@@ -158,3 +158,6 @@ plugin.zip
 
 # macOS
 .DS_Store
+
+# Local Claude Code settings and skills
+.claude/

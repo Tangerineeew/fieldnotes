@@ -1,8 +1,8 @@
-import { maxImageBytes, uploadPartChars } from '../shared/limits.json';
+import { maxImageBytes, maxPdfBytes, uploadPartChars } from '../shared/limits.json';
 import type { Invoke } from './api';
 
 
-export type UploadedImage = { source: string; dataUrl: string; alt: string };
+export type UploadedAttachment = { source: string; dataUrl: string; alt: string };
 
 const MAX_EDGE = 2560;
 const KEEP_AS_IS = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif']);
@@ -34,9 +34,11 @@ async function compress(file: File): Promise<Blob> {
   return [encoded, original].filter((blob): blob is Blob => Boolean(blob)).sort((a, b) => a.size - b.size)[0] || file;
 }
 
-export async function uploadImage(invoke: Invoke, file: File): Promise<UploadedImage> {
-  const blob = await compress(file);
-  if (blob.size > maxImageBytes) throw new Error('too-large');
+// Images are compressed first; a PDF goes as it is.
+export async function uploadAttachment(invoke: Invoke, file: File): Promise<UploadedAttachment> {
+  const pdf = file.type === 'application/pdf';
+  const blob = pdf ? file : await compress(file);
+  if (blob.size > (pdf ? maxPdfBytes : maxImageBytes)) throw new Error(pdf ? 'too-large-pdf' : 'too-large');
   const dataUrl = await blobUrl(blob);
   const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
   // Plugin route bodies are capped at 100 KB; parts stay a multiple of 4 so the base64 joins cleanly server-side.
@@ -47,7 +49,11 @@ export async function uploadImage(invoke: Invoke, file: File): Promise<UploadedI
       upload_id: uploadId, part, parts, data: base64.slice(part * uploadPartChars, (part + 1) * uploadPartChars) } });
     uploadId = result.upload_id; source = result.source || '';
   }
-  return { source, dataUrl, alt: file.name.replace(/\.[^.]+$/, '').replace(/[[\]\n]/g, ' ').trim() || 'image' };
+  // A PDF keeps its file name, extension and all, as the name its frame shows.
+  return { source, dataUrl, alt: (pdf ? file.name : file.name.replace(/\.[^.]+$/, '')).replace(/[[\]\n]/g, ' ').trim() || 'image' };
 }
 
-export const imageFiles = (items: FileList | null | undefined) => Array.from(items || []).filter((file) => file.type.startsWith('image/'));
+// The name main.tsx still imports; it goes once main.tsx imports `uploadAttachment`.
+
+export const attachmentFiles = (items: FileList | null | undefined) => Array.from(items || [])
+  .filter((file) => file.type.startsWith('image/') || file.type === 'application/pdf');
