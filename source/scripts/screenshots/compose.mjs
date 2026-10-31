@@ -1,5 +1,5 @@
 // Writes one HTML page per README image: a quiet near-white ground and the cropped interface in one window. Covers add the
-// app tile, the name and the tagline above a single window that runs off the bottom edge.
+// app tile, the name and the tagline above the light window, which runs off the bottom edge with the dark theme behind it.
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { WORK as DIR } from './lib.mjs';
@@ -10,13 +10,13 @@ fs.mkdirSync(`${DIR}/pages`, { recursive: true });
 
 // Crops in CSS pixels of the raw shots, which were taken at 2x.
 const CROP = {
-  library: { x: 124, y: 182, w: 1112, h: 637 },
+  library: { x: 110, y: 183, w: 1141, h: 656 },
   editor: { x: 311, y: 163, w: 765, h: 845 },
   sharing: { x: 400, y: 70, w: 560, h: 720 },
   bring: { x: 412, y: 604, w: 512, h: 150 },
-  properties: { x: 360, y: 378, w: 640, h: 262 },
-  deleted: { x: 124, y: 182, w: 1112, h: 420 },
-  trip: { x: 124, y: 122, w: 1112, h: 481 },
+  properties: { x: 360, y: 380, w: 640, h: 250 },
+  deleted: { x: 110, y: 183, w: 1141, h: 420 },
+  trip: { x: 110, y: 124, w: 1141, h: 586 },
   comments: { x: 310, y: 162, w: 1075, h: 678 },
   cards: { x: 311, y: 163, w: 765, h: 945 },
 };
@@ -27,9 +27,9 @@ const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1
 
 // Shots are 2x, so a CSS pixel of the page they came from is two of theirs.
 const pixels = (file) => Number(/pixelWidth: (\d+)/.exec(execFileSync('sips', ['-g', 'pixelWidth', file]).toString())[1]);
-const windowOf = (shot, crop, width, extra = '') => {
+const windowOf = (shot, crop, width, extra = '', kind = 'window') => {
   const scale = width / crop.w; const natural = pixels(`${RAW}/${shot}.png`) / 2;
-  return `<div class="window" style="width:${width}px;height:${Math.round(crop.h * scale)}px;${extra}">
+  return `<div class="${kind}" style="width:${width}px;height:${Math.round(crop.h * scale)}px;${extra}">
     <img src="file://${RAW}/${shot}.png" style="width:${natural * scale}px;left:${-crop.x * scale}px;top:${-crop.y * scale}px"></div>`;
 };
 const page = (name, width, height, body, lang) => fs.writeFileSync(`${DIR}/pages/${name}.html`, `<!doctype html>
@@ -41,6 +41,8 @@ const page = (name, width, height, body, lang) => fs.writeFileSync(`${DIR}/pages
   .window { position: absolute; overflow: hidden; border-radius: 16px; background: #fff;
     box-shadow: 0 0 0 1px rgba(0, 0, 0, .06), 0 1px 3px rgba(0, 0, 0, .05), 0 24px 60px -24px rgba(0, 0, 0, .22); }
   .window img { position: absolute; height: auto; }
+  .window.behind { transform: perspective(1600px) rotateY(24deg) scale(.94); transform-origin: 0 50%;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .1), 0 30px 70px -28px rgba(0, 0, 0, .35); }
   .head { position: absolute; left: 0; right: 0; top: 64px; display: grid; justify-items: center; text-align: center; }
   .head b { display: grid; place-items: center; width: 60px; height: 60px; border-radius: 15px;
     background: linear-gradient(165deg, #3a3a3f, #141416); box-shadow: 0 8px 20px -8px rgba(0, 0, 0, .4); }
@@ -56,11 +58,14 @@ const TAGLINE = {
 
 for (const lang of ['en', 'zh']) {
   const suffix = lang === 'zh' ? '.zh-CN' : '';
-  const cover = (out, name, tagline, shot, crop) => page(`${out}${suffix}`, 1600, 900,
+  // The dark window stands behind and to the right, turned away and smaller, so the two read as stacked cards.
+  const cover = (out, name, tagline, light, dark, crop) => page(`${out}${suffix}`, 1600, 900,
     `<div class="head"><b>${ICON}</b><h1>${name}</h1><p>${tagline}</p></div>`
-    + windowOf(shot, crop, 1200, 'left:200px;top:318px;'), lang);
-  cover('fieldnotes-screenshot', 'Fieldnotes', TAGLINE[lang].fieldnotes, `${lang}-library-light`, CROP.library);
-  cover('trip-screenshot', 'Trip Fieldnotes', TAGLINE[lang].trip, `${lang}-comments`, CROP.comments);
+    + windowOf(dark, crop, 1120, 'left:700px;top:296px;', 'window behind')
+    + windowOf(light, crop, 1120, 'left:140px;top:346px;'), lang);
+  cover('fieldnotes-screenshot', 'Fieldnotes', TAGLINE[lang].fieldnotes, `${lang}-library-light`, `${lang}-library-dark`,
+    CROP.library);
+  cover('trip-screenshot', 'Trip Fieldnotes', TAGLINE[lang].trip, `${lang}-comments`, `${lang}-comments-dark`, CROP.comments);
   // A feature sits whole in the middle of its image with an even margin, never drawn larger than it was taken; a small one
   // gets a small image rather than empty space.
   const feature = (out, shot, crop) => {

@@ -585,7 +585,7 @@ test('bulk collaborator role updates commit atomically for notes and folders', a
 });
 
 test('folder permissions inherit without allowing public visibility to bypass private ancestors', async (t) => {
-  const { owner, host } = await setup(t);
+  const { owner, host, db } = await setup(t);
   const root = (await owner.request('POST', '/folder', { action: 'create', name: 'Japan', visibility: 'private' })).data;
   const child = (await owner.request('POST', '/folder', { action: 'create', name: 'Transport', parent_id: root.id,
     visibility: 'public' })).data;
@@ -605,11 +605,74 @@ test('folder permissions inherit without allowing public visibility to bypass pr
   assert.equal((await viewer.request('GET', '/note', {}, { id: privateInPublic.id })).status, 404);
   const privateChild = (await owner.request('POST', '/folder', { action: 'create', name: 'Private', parent_id: publicRoot.id,
     visibility: 'private' })).data;
-  const hiddenPublicNote = await create(owner, { folder_id: privateChild.id, visibility: 'public', title: 'Hidden public note' });
+  // Moves keep this from arising, so it is written directly: a note marked public under a private folder stays hidden.
+  const hiddenPublicNote = await create(owner, { folder_id: privateChild.id, title: 'Hidden public note' });
+  db.prepare("UPDATE notes SET visibility = 'public' WHERE id = ?").run(hiddenPublicNote.id);
   assert.equal((await viewer.request('GET', '/public')).data.notes.some((item) => item.id === hiddenPublicNote.id), false);
   const reference = await owner.request('GET', '/reference', {}, { ref: `fieldnotes://note/${note.id}` });
   assert.deepEqual(reference.data, { reference: `fieldnotes://note/${note.id}`, id: note.id, title: 'Edited through folder' });
   assert.equal((await viewer.request('GET', '/reference', {}, { ref: `fieldnotes://note/${hiddenPublicNote.id}` })).data.unavailable, true);
+});
+
+test('a note or folder lives in one library, and moves between them with what its mover owns inside', async (t) => {
+  const { owner, host } = await setup(t);
+  const folder = async (name, parent_id = null) => (await owner.request('POST', '/folder', { action: 'create', name, parent_id })).data;
+  const listed = async (h, route) => (await h.request('GET', route)).data.notes.map((item) => item.title).sort();
+  const visibility = (folder_id, value, h = owner) => h.request('POST', '/folder', { action: 'visibility', folder_id, visibility: value });
+  const japan = await folder('Japan'); const rail = await folder('Rail', japan.id); const kept = await folder('Kept');
+  await create(owner, { folder_id: rail.id, title: 'JR Pass' }); await create(owner, { folder_id: japan.id, title: 'Loose' });
+  await owner.request('POST', '/folder', { action: 'bulk_roles', folder_id: japan.id, changes: [{ user_id: 2, role: 'editor' }] });
+  await create(host(2), { folder_id: rail.id, title: 'Theirs' });
+  assert.deepEqual(await listed(owner, '/notes'), ['JR Pass', 'Loose', 'Theirs']);
+
+  // Rail goes public with its owner's notes; Japan above opens its row only, and the collaborator's note keeps its setting.
+  assert.equal((await visibility(rail.id, 'public')).status, 200);
+  const folders = new Map((await owner.request('GET', '/folders')).data.map((item) => [item.id, item]));
+  assert.deepEqual([folders.get(japan.id).visibility, folders.get(rail.id).visibility, folders.get(kept.id).visibility],
+    ['public', 'public', 'private']);
+  assert.deepEqual(await listed(host(3), '/public'), ['JR Pass']);
+  assert.deepEqual(await listed(owner, '/notes'), ['Loose', 'Theirs']);
+  assert.deepEqual(await listed(host(2), '/notes'), ['Loose', 'Theirs']);
+
+  // Moving into a private folder brings a note back; making it public again opens that folder too.
+  const pass = (await owner.request('GET', '/public')).data.notes[0];
+  await owner.request('POST', '/folder', { action: 'move_note', note_id: pass.id, folder_id: kept.id });
+  assert.deepEqual(await listed(host(3), '/public'), []);
+  assert.equal((await owner.request('POST', '/note-settings', { id: pass.id, visibility: 'public' })).data.visibility, 'public');
+  assert.equal((await owner.request('GET', '/folders')).data.find((item) => item.id === kept.id).visibility, 'public');
+  assert.deepEqual(await listed(host(3), '/public'), ['JR Pass']);
+  assert.equal((await visibility(kept.id, 'private')).status, 200);
+  assert.deepEqual(await listed(owner, '/notes'), ['JR Pass', 'Loose', 'Theirs']);
+
+  // Only a folder's owner can open it, so a note under someone else's private folder cannot go public through it.
+  const theirs = (await host(2).request('GET', '/notes')).data.notes.find((item) => item.title === 'Theirs');
+  await host(2).request('POST', '/folder', { action: 'move_note', note_id: theirs.id, folder_id: japan.id });
+  assert.equal((await visibility(japan.id, 'private')).status, 200);
+  assert.equal((await host(2).request('POST', '/note-settings', { id: theirs.id, visibility: 'public' })).status, 403);
+
+  // Saving follows the same rules: a note made public opens its folders, and a move into a private folder takes it back.
+  const loose = (await owner.request('GET', '/notes')).data.notes.find((item) => item.title === 'Loose');
+  const saved = (await owner.request('GET', '/note', {}, { id: loose.id })).data;
+  const opened = await owner.request('POST', '/save', { ...saved, folder_id: kept.id, visibility: 'public' });
+  assert.equal(opened.data.visibility, 'public');
+  assert.equal((await owner.request('GET', '/folders')).data.find((item) => item.id === kept.id).visibility, 'public');
+  const hidden = await folder('Hidden');
+  assert.equal((await owner.request('POST', '/save', { ...opened.data, folder_id: hidden.id })).data.visibility, 'private');
+});
+
+test('each library keeps its own Recently deleted, where recovering would put the note back', async (t) => {
+  const { owner } = await setup(t);
+  const shelf = (await owner.request('POST', '/folder', { action: 'create', name: 'Shelf', visibility: 'public' })).data;
+  const shown = await create(owner, { folder_id: shelf.id, title: 'Shown', visibility: 'public' });
+  const kept = await create(owner, { title: 'Kept' });
+  await deleteNote(owner, shown.id); await deleteNote(owner, kept.id);
+  const bin = async (library) => (await owner.request('GET', '/deleted', {}, { library })).data.map((item) => item.title);
+  assert.deepEqual([await bin('public'), await bin('private')], [['Shown'], ['Kept']]);
+  // A note whose folder went private since returns to the private library, so it waits there.
+  await owner.request('POST', '/folder', { action: 'visibility', folder_id: shelf.id, visibility: 'private' });
+  assert.deepEqual((await bin('private')).sort(), ['Kept', 'Shown']);
+  assert.equal((await owner.request('POST', '/deleted', { action: 'recover', id: shown.id })).data.visibility, 'private');
+  assert.equal((await owner.request('GET', '/deleted', {}, { library: 'other' })).status, 400);
 });
 
 test('notes can be moved between owned folders without replacing their content', async (t) => {

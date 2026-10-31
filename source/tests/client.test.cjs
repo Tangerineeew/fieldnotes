@@ -93,10 +93,19 @@ async function ui(t, options = {}) {
         notes: [{ ...current, mode: 'live' }] };
       return { ok: true };
     },
-    async confirm(input) { confirmations.push(input); return options.confirm !== false; },
     navigate(to) { calls.push({ navigate: to }); },
     openExternal(url) { calls.push({ external: url }); },
   };
+  // The page asks in its own window: keep what it asked, and answer as `options.confirm` says.
+  new window.MutationObserver(() => {
+    const dialog = doc.querySelector('.fn-confirm:not([data-answered])');
+    if (!dialog || dialog.closest('[inert]') || options.confirm === 'manual') return;
+    dialog.setAttribute('data-answered', '');
+    const [cancel, accept] = dialog.querySelectorAll('button');
+    confirmations.push({ message: dialog.querySelector('.fn-confirm-message').textContent, confirmLabel: accept.textContent,
+      danger: accept.classList.contains('trek-btn--danger') });
+    setTimeout(() => (options.confirm === false ? cancel : accept).click());
+  }).observe(doc.body, { childList: true, subtree: true });
   window.eval(bundle);
   await until(() => calls.some((call) => call.sub.startsWith('/notes') || call.sub.startsWith('/public')
     || call.sub === '/trip' && call.body?.action === 'list'));
@@ -269,6 +278,25 @@ test('folders drag onto folders or the library root, never into their own subtre
   const root = column(app, 0); drag(app, 'dragover', root); drag(app, 'drop', root);
   await until(() => app.calls.filter((call) => call.body?.action === 'move').length === 2);
   assert.equal(app.calls.filter((call) => call.body?.action === 'move')[1].body.parent_id, null);
+});
+
+test('the private library leaves out public folders, and a folder dragged onto the public tab moves there', async (t) => {
+  const shown = { id: '33333333-3333-3333-3333-333333333334', owner_id: 1, parent_id: null, name: 'Shown', visibility: 'public',
+    role: 'editor', public_path: true, can_manage: true };
+  const app = await ui(t, { invoke: (sub) => sub === '/folders' ? [...treeFolders, shown] : undefined });
+  await until(() => finderItem(app, '日本'));
+  assert.equal(finderItem(app, 'Shown'), undefined);
+  finderItem(app, '日本').querySelector('.fn-finder-row').click(); await until(() => finderItem(app, '交通'));
+  drag(app, 'dragstart', finderItem(app, '交通').querySelector('.fn-finder-row'));
+  await until(() => finderItem(app, '交通').classList.contains('is-dragging'));
+  const [privateTab, publicTab] = app.doc.querySelectorAll('[role="tab"]');
+  assert.equal(drag(app, 'dragover', privateTab).defaultPrevented, false);
+  assert.equal(drag(app, 'dragover', publicTab).defaultPrevented, true);
+  drag(app, 'drop', publicTab);
+  await until(() => app.calls.some((call) => call.body?.action === 'visibility'));
+  assert.match(app.confirmations.at(-1).message, /The folders above it, 日本, become public too/);
+  assert.deepEqual({ ...app.calls.find((call) => call.body?.action === 'visibility').body },
+    { action: 'visibility', folder_id: treeFolders[2].id, visibility: 'public' });
 });
 
 test('sort menu requests the chosen order and remembers it', async (t) => {
@@ -448,6 +476,19 @@ test('collaborator roles can be staged and saved together', async (t) => {
   await until(() => app.calls.some((call) => call.sub === '/collaborator' && call.body?.action === 'bulk_roles'));
   const request = app.calls.find((call) => call.sub === '/collaborator' && call.body?.action === 'bulk_roles');
   assert.equal(JSON.stringify(request.body.changes), JSON.stringify([{ user_id: 2, role: 'viewer' }]));
+});
+
+test('confirmations ask in the plugin’s own window: a delete starts on Cancel, and Escape cancels it', async (t) => {
+  const app = await ui(t, { confirm: 'manual' }); await app.open();
+  app.click('Delete note');
+  await until(() => app.doc.querySelector('.fn-confirm'));
+  assert.equal(app.doc.querySelector('.fn-confirm').getAttribute('role'), 'alertdialog');
+  assert.equal(app.doc.querySelector('#fn-confirm-title').textContent, 'Delete note');
+  await until(() => app.doc.activeElement?.textContent === 'Cancel');
+  app.doc.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await until(() => app.doc.querySelector('.fn-confirm')?.closest('[inert]') || !app.doc.querySelector('.fn-confirm'));
+  assert.equal(app.calls.some((call) => call.sub === '/archive'), false);
+  assert.ok(app.doc.querySelector('.fn-layout-reader'));
 });
 
 test('reference and snapshot share confirmations are explicit and UI sends their mode', async (t) => {
@@ -1574,6 +1615,19 @@ test('a note copies as Markdown that imports back: properties as front matter, i
   assert.match(body, /^See \[\[Osaka\]\]/);
 });
 
+test('each library keeps its own Recently deleted', async (t) => {
+  const gone = { id: '33333333-3333-4333-8333-333333333334', title: 'Public plan', icon: null, deleted_at: new Date().toISOString(),
+    purge_at: new Date(Date.now() + KEPT_MS).toISOString() };
+  const app = await ui(t, { invoke: (sub) => sub === '/deleted?library=public' ? [gone]
+    : sub.startsWith('/deleted?library=') ? [] : sub.startsWith('/public') ? { notes: [], has_more: false } : undefined });
+  const binRow = () => app.doc.querySelector('.fn-finder-column[data-column="0"] .fn-finder-bin .fn-finder-row');
+  assert.equal(binRow(), null);
+  app.doc.querySelectorAll('[role="tab"]')[1].click();
+  await until(() => binRow());
+  binRow().click();
+  await until(() => app.doc.querySelector('[data-bin] .fn-finder-row')?.textContent.includes('Public plan'));
+});
+
 test('Recently deleted sits at the foot of the library while it holds a note, and recovers it or deletes it permanently', async (t) => {
   const gone = { id: '33333333-3333-4333-8333-333333333333', title: 'Old plan', icon: null, deleted_at: new Date().toISOString(),
     purge_at: new Date(Date.now() + KEPT_MS).toISOString() };
@@ -1582,7 +1636,7 @@ test('Recently deleted sits at the foot of the library while it holds a note, an
     if (sub === '/deleted' && init?.method === 'POST') {
       bin = []; return init.body.action === 'recover' ? { ...gone } : { deleted: true };
     }
-    if (sub === '/deleted') return bin;
+    if (sub === '/deleted?library=private') return bin;
     if (sub.startsWith('/deleted?id=')) return { ...gone, content: '# Kept text', properties: [], updated_at: gone.deleted_at };
   } });
   const binRow = () => app.doc.querySelector('.fn-finder-column[data-column="0"] .fn-finder-bin .fn-finder-row');

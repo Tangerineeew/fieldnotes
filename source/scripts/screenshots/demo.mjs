@@ -21,8 +21,9 @@ const CITIES = { en: ['Kunming', 'Dali', 'Lijiang', 'Tokyo', 'Kyoto', 'Seoul'], 
 const STATUS = { en: ['Draft', 'Ready'], zh: ['草稿', '可用'] };
 const TAGS = { en: ['Transit', 'Food', 'Nature', 'Culture', 'Money'], zh: ['交通', '美食', '自然', '文化', '花钱'] };
 // Links, trips and trip folders are the same in both languages; only the words differ.
+// Only Onsen etiquette is public: going public opens Japan above it, whose other notes keep it in the private library too.
 const SHARED = {
-  public: ['mushrooms', 'onsen'],
+  public: ['onsen'],
   collaborators: { rail: { 2: 'editor', 3: 'viewer', 4: 'viewer' }, esim: { 2: 'editor', 3: 'viewer', 4: 'viewer', 5: 'viewer' } },
   links: [['rail', 10, 103, 'live'], ['erhai', 10, 104, 'live'], ['alipay', 10, null, 'live'], ['esim', 10, null, 'live'],
     ['day1', 10, 101, 'snapshot'], ['stoneforest', 10, 102, 'live'], ['crossbridge', 10, 102, 'snapshot'], ['mushrooms', 10, null, 'live'],

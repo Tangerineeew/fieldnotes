@@ -61,13 +61,15 @@ type Draft = {
   title: string; content: string; icon: string | null; properties: Property[]; visibility: 'private' | 'public'; folder_id: string | null
 };
 type Sorting = { key: 'name' | 'updated' | 'created'; order: 'asc' | 'desc' };
+// A question the page asks before acting, answered in its own window; `before` is where focus returns.
+type ConfirmOptions = { title: string; message: string; confirmLabel: string; danger?: boolean };
+type ConfirmRequest = ConfirmOptions & { resolve: (answer: boolean) => void; before: HTMLElement | null };
 // What is being dragged, and the folder it sits in now.
 type Drag = { kind: 'note' | 'folder'; id: string; from: string | null };
 interface Bridge {
   context: Context | null;
   onContext(cb: (ctx: Context) => void): () => void;
   invoke<T>(path: string, options?: { method: string; body: unknown }): Promise<T>;
-  confirm(options: { title?: string; message: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }): Promise<boolean>;
   navigate(path: string): void;
   openExternal(url: string): void;
   session?: {
@@ -139,6 +141,20 @@ function sortItems<T extends { id: string; created_at?: string; updated_at?: str
   const compare = key === 'name' ? (a: T, b: T) => collator.compare(name(a), name(b)) : (a: T, b: T) => date(a).localeCompare(date(b));
   return [...items].sort((a, b) => (order === 'asc' ? 1 : -1) * compare(a, b) || a.id.localeCompare(b.id));
 }
+// The private library's folders: those outside the public library, and the public ones above them or above a private note, so
+// each path stays whole.
+function privateFolders(folders: Folder[], notes: Note[]) {
+  const byId = new Map(folders.map((folder) => [folder.id, folder]));
+  const kept = new Set<string>();
+  const keep = (folderId: string | null | undefined) => {
+    for (let current = folderId ? byId.get(folderId) : undefined; current && !kept.has(current.id);
+      current = current.parent_id ? byId.get(current.parent_id) : undefined) kept.add(current.id);
+  };
+  folders.forEach((folder) => { if (!folder.public_path) keep(folder.id); });
+  notes.forEach((item) => keep(item.folder_id));
+  return folders.filter((folder) => kept.has(folder.id));
+}
+
 function App() {
   const [context, setContext] = useState<Context | null>(trek.context);
   const owns = (item: Note) => Number(item.owner_id) === Number(context?.userId);
@@ -152,12 +168,22 @@ function App() {
   const [newFolderName, setNewFolderName] = useState('');
   const [newFolderIcon, setNewFolderIcon] = useState('');
   const [newFolderIconTouched, setNewFolderIconTouched] = useState(false);
-  const [newFolderVisibility, setNewFolderVisibility] = useState<'private' | 'public'>('private');
   const folderMembers = useCollaborators();
   const [note, setNote] = useState<Note | null>(null);
   const [draft, setDraft] = useState<Draft>(empty);
   const [editing, setEditing] = useState(false);
   const [publicMode, setPublicMode] = useState(false);
+  // What is made in a library belongs to it: new notes and folders, and imports, take its visibility.
+  const scope = publicMode ? 'public' : 'private';
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  // A new question replaces one still open, which counts as cancelled, so nothing waits on an answer that cannot come.
+  const confirm = (options: ConfirmOptions) => new Promise<boolean>((resolve) => setConfirmRequest((open) => {
+    open?.resolve(false); return { ...options, resolve, before: document.activeElement as HTMLElement | null };
+  }));
+  function answerConfirm(answer: boolean) {
+    if (!confirmRequest) return;
+    confirmRequest.before?.focus(); confirmRequest.resolve(answer); setConfirmRequest(null);
+  }
   // Recently deleted: whether its column is open, the owner's deleted notes, the one read for the preview, and a row's open menu.
   const [binOpen, setBinOpen] = useState(false);
   const [deletedNotes, setDeletedNotes] = useState<DeletedNote[]>([]);
@@ -298,12 +324,12 @@ function App() {
   // A folder you own previews who can open it, fetched again once its permissions window closes.
   useEffect(() => {
     const folder = folders.find((item) => item.id === selectedFolderId);
-    if (!folder?.can_manage || publicMode || tripId || note || editing || permissionFolderId) return;
+    if (!folder?.can_manage || tripId || note || editing || permissionFolderId) return;
     let alive = true;
     post<{ collaborators: Collaborator[] }>('/folder', { action: 'collaborators', folder_id: folder.id })
       .then((result) => { if (alive) setFolderAccess({ folderId: folder.id, people: result?.collaborators ?? [] }); }).catch(() => {});
     return () => { alive = false; };
-  }, [selectedFolderId, folders, publicMode, tripId, note, editing, permissionFolderId]);
+  }, [selectedFolderId, folders, tripId, note, editing, permissionFolderId]);
 
   useEffect(() => trek.onContext(setContext), []);
   // A quick action says nothing; only one still running after a moment says it is working.
@@ -367,7 +393,7 @@ function App() {
       ? t('Discard unsaved note and permission changes?', '放弃尚未保存的笔记和权限修改？')
       : permissionDirty ? t('Discard unsaved permission changes?', '放弃尚未保存的权限修改？')
         : t('Discard unsaved changes?', '放弃尚未保存的修改？');
-    return trek.confirm({ message, danger: true });
+    return confirm({ title: t('Unsaved changes', '未保存的修改'), message, confirmLabel: t('Discard', '放弃'), danger: true });
   }
   async function loadFolders() {
     const result = tripId
@@ -391,7 +417,7 @@ function App() {
     // learns whether Recently deleted holds anything.
     const [result] = await Promise.all([invoke<{ notes: Note[] }>(
       `${route}?q=${encodeURIComponent(search)}&limit=${LIBRARY_LIMIT}${sortQuery}`
-    ), publicScope ? null : loadDeleted()]);
+    ), loadDeleted(publicScope)]);
     if (seq !== latestRequest.current) return [];
     // The library lists notes without their text, which a preview or an opened note reads whole.
     const listed = result.notes.map((item) => ({ ...item, content: '' }));
@@ -399,13 +425,13 @@ function App() {
     return listed;
   }
   async function loadCollaborators(item: Note) {
-    if (tripId || publicMode || !owns(item)) { noteMembers.show(null); return; }
+    if (tripId || !owns(item)) { noteMembers.show(null); return; }
     noteMembers.show(await invoke<{ collaborators: Collaborator[]; candidates: Person[] }>(
       `/collaborators?note_id=${encodeURIComponent(item.id)}`
     ));
   }
   async function loadLinkedTrips(item: Note) {
-    if (tripId || publicMode || !owns(item)) { setLinkedTrips([]); return; }
+    if (tripId || !owns(item)) { setLinkedTrips([]); return; }
     const result = await post<LinkedTrip[]>('/trip', { action: 'links', note_id: item.id });
     setLinkedTrips(Array.isArray(result) ? result : []);
   }
@@ -768,7 +794,9 @@ function App() {
     remove: (comment: Comment) => void (async () => {
       const message = comment.parent_id ? t('Delete this reply?', '删除这条回复？')
         : t('Delete this comment and its replies?', '删除这条评论及其全部回复？');
-      if (await trek.confirm({ message, danger: true })) await commentRequest({ action: 'comment_delete', comment_id: comment.id });
+      const title = comment.parent_id ? t('Delete reply', '删除回复') : t('Delete comment', '删除评论');
+      if (!await confirm({ title, message, confirmLabel: t('Delete', '删除'), danger: true })) return;
+      await commentRequest({ action: 'comment_delete', comment_id: comment.id });
     })(),
     resolve: (commentId: string, resolved: boolean) => {
       if (resolved && activeThread === commentId) setActiveThread(null);
@@ -780,8 +808,8 @@ function App() {
   }
   async function convertToSnapshot(item = note) {
     if (!tripId || !item) return;
-    if (!await trek.confirm({
-      confirmLabel: t('Convert', '转换'),
+    if (!await confirm({
+      title: t('Convert to snapshot', '转为快照'), confirmLabel: t('Convert', '转换'),
       message: t('Convert to a snapshot? The trip keeps its own copy, which no longer follows the author’s edits and stays if they leave.',
         '转为快照？这次旅行会保留一份副本，不再同步作者之后的修改，作者删除原文或离开旅行也不受影响。')
     })) return;
@@ -796,7 +824,8 @@ function App() {
         '从这次旅行中移除这份快照？它会连同评论在“最近删除”中保留 30 天。')
       : t('Remove this reference from the trip? It stays in Recently deleted for 30 days; the original is unchanged.',
         '从这次旅行中移除这条引用？它会在“最近删除”中保留 30 天，原文不受影响。');
-    if (!await trek.confirm({ message, danger: true })) return;
+    const removal = t('Remove from trip', '从旅行移除');
+    if (!await confirm({ title: removal, message, confirmLabel: removal, danger: true })) return;
     await post('/trip', { action: 'unlink', trip_id: tripId, note_id: item.id });
     if (note?.id === item.id) setNote(null);
     if (previewId === item.id) setPreviewId(null);
@@ -815,7 +844,7 @@ function App() {
   const update = (key: keyof Draft, value: Draft[typeof key]) => setDraft((prev) => ({ ...prev, [key]: value }));
   async function loadFolderCollaborators(folderId: string | null) {
     const folder = folders.find((item) => item.id === folderId);
-    if (!folderId || publicMode || tripId || !folder?.can_manage) { folderMembers.show(null); return; }
+    if (!folderId || tripId || !folder?.can_manage) { folderMembers.show(null); return; }
     folderMembers.show(await post<{ collaborators: Collaborator[]; candidates: Person[] }>(
       '/folder', { action: 'collaborators', folder_id: folderId }
     ));
@@ -850,7 +879,7 @@ function App() {
   async function createFolder() {
     if (!newFolderName.trim()) return;
     await folderRequest('create', { name: newFolderName.trim(), icon: newFolderIcon.trim() || null, parent_id: selectedFolderId,
-      ...(tripId ? {} : { visibility: newFolderVisibility }) });
+      ...(tripId ? {} : { visibility: scope }) });
     resetNewFolder(false); await loadFolders();
   }
   async function moveNoteToFolder(noteId: string, folderId: string | null) {
@@ -863,8 +892,9 @@ function App() {
     trek.navigate(`/trips/${trip.id}`);
   }
   async function deleteFolder(folder: Folder) {
-    if (!await trek.confirm({
-      danger: true, message: t('Delete the folder “{name}”? Only empty folders can be deleted.', '删除文件夹“{name}”？只能删除空文件夹。',
+    if (!await confirm({
+      danger: true, title: t('Delete folder', '删除文件夹'), confirmLabel: t('Delete', '删除'),
+      message: t('Delete the folder “{name}”? Only empty folders can be deleted.', '删除文件夹“{name}”？只能删除空文件夹。',
         { name: folder.name })
     })) return;
     await folderRequest('archive', { folder_id: folder.id });
@@ -882,9 +912,8 @@ function App() {
   const folderSettingsActions = (folder: Folder) => ({
     onIconDraft: (icon: string) => setFolders((items) => items.map((item) => item.id === folder.id ? { ...item, icon } : item)),
     onIcon: (icon: string) => void run(() => updateFolderIcon(icon, folder)),
-    onVisibility: (visibility: string) => void run(async () => {
-      await post('/folder', { action: 'visibility', folder_id: folder.id, visibility }); await loadFolders();
-    }),
+    onVisibility: (visibility: string) => void run(() => moveToLibrary('folder', folder.id, folder.parent_id,
+      visibility as 'private' | 'public')),
   });
   async function openFolderPermissions(folder: Folder) {
     if (tripId || !folder.can_manage) return;
@@ -955,16 +984,41 @@ function App() {
   }
   async function removeLinkedTrip(trip: LinkedTrip) {
     if (!note) return;
-    if (!await trek.confirm({
-      danger: true, message: t('Remove “{note}” from {trip}? It stays in the trip’s Recently deleted for 30 days.',
+    if (!await confirm({
+      danger: true, title: t('Remove from trip', '从旅行移除'), confirmLabel: t('Remove from trip', '从旅行移除'),
+      message: t('Remove “{note}” from {trip}? It stays in the trip’s Recently deleted for 30 days.',
         '从“{trip}”中移除“{note}”？它会在这次旅行的“最近删除”中保留 30 天。', { note: note.title, trip: trip.title })
     })) return;
     await post('/trip', { action: 'unlink', trip_id: trip.id, note_id: note.id, mode: 'live' });
     await loadLinkedTrips(note); setStatus(t('Removed from trip.', '已从旅行中移除。'));
   }
+  // The open note goes to the other library, and the page with it, so leaving the note returns to where it now lives.
   async function changeVisibility(visibility: 'private' | 'public') {
-    if (!note) return;
-    setNote(await post<Note>('/note-settings', { id: note.id, visibility })); await load();
+    if (!note || !await moveToLibrary('note', note.id, note.folder_id || null, visibility)) return;
+    setNote(await invoke<Note>(`/note?id=${encodeURIComponent(note.id)}`));
+    const nextPublic = visibility === 'public';
+    if (nextPublic === publicMode) await load();
+    else { await load('', nextPublic); setPublicMode(nextPublic); setQuery(''); }
+  }
+  // Moving between the libraries takes what you own inside along; going public also opens the private folders above, which
+  // is asked first, since their names then show to everyone.
+  async function moveToLibrary(kind: 'note' | 'folder', itemId: string, parentId: string | null, visibility: 'private' | 'public') {
+    const above: string[] = [];
+    for (let current = visibility === 'public' ? folders.find((item) => item.id === parentId) : undefined; current;
+      current = folders.find((item) => item.id === current!.parent_id)) {
+      if (current.visibility !== 'public') above.unshift(current.name);
+    }
+    if (above.length && !await confirm({ title: t('Move to the public library', '移到公开图书馆'), confirmLabel: t('Move', '移动'),
+      message: t('The folders above it, {folders}, become public too. Only their names show; what else they hold stays private.',
+        '它上层的文件夹“{folders}”也会公开。公开的只有文件夹名称，其中的其他内容仍然保持私人。', { folders: above.join(' › ') }) })) return false;
+    if (kind === 'note') await post<Note>('/note-settings', { id: itemId, visibility });
+    else await post('/folder', { action: 'visibility', folder_id: itemId, visibility });
+    // An open note takes the page to its new library, which changeVisibility loads instead.
+    await loadFolders(); if (!note || note.id !== itemId) await load();
+    if (previewId === itemId) setPreviewId(null);
+    setStatus(visibility === 'public' ? t('Moved to the public library.', '已移到公开图书馆。')
+      : t('Moved to the private library.', '已移到私人图书馆。'));
+    return true;
   }
   // Sharing opens as a window over the note; closing it with unsaved roles asks first, then drops them.
   function openShare() {
@@ -977,8 +1031,8 @@ function App() {
     if (note && noteMembers.changes.length) await loadCollaborators(note);
   }
   async function deleteNote(item: Note) {
-    if (!await trek.confirm({
-      danger: true, message: t(
+    if (!await confirm({
+      danger: true, title: t('Delete note', '删除笔记'), confirmLabel: t('Delete', '删除'), message: t(
         'Delete this note? It stays in Recently deleted for 30 days. Live references become unavailable; snapshots remain.',
         '删除这篇笔记？它会在“最近删除”中保留 30 天。实时引用将不可用，旅行快照会保留。')
     })) return;
@@ -987,10 +1041,11 @@ function App() {
     if (previewId === item.id) setPreviewId(null);
     await load(); setStatus(t('Moved to Recently deleted.', '已移到“最近删除”。'));
   }
-  // The library's Recently deleted holds its owner's notes; a trip's holds what its editors removed, and others find it empty.
-  async function loadDeleted() {
+  // Each library's Recently deleted holds its owner's notes that would return to it; a trip's holds what its editors removed, and
+  // others find it empty.
+  async function loadDeleted(publicScope = publicMode) {
     const list = tripId ? await post<DeletedNote[]>('/trip', { action: 'deleted', trip_id: tripId }).catch(() => [])
-      : await invoke<DeletedNote[]>('/deleted');
+      : await invoke<DeletedNote[]>(`/deleted?library=${publicScope ? 'public' : 'private'}`);
     setDeletedNotes(Array.isArray(list) ? list.map(deletedTitle) : []);
   }
   const deletedTitle = <T extends DeletedNote>(item: T): T => ({ ...item, title: item.title ?? unavailableTitle });
@@ -1015,7 +1070,8 @@ function App() {
     await leaveDeleted(item); await load(); setStatus(t('Note recovered.', '笔记已恢复。'));
   }
   async function deletePermanently(item: DeletedNote) {
-    if (!await trek.confirm({ danger: true, message: t('Delete “{note}” permanently? This can’t be undone.',
+    if (!await confirm({ danger: true, title: t('Delete permanently', '永久删除'), confirmLabel: t('Delete', '删除'),
+      message: t('Delete “{note}” permanently? This can’t be undone.',
       '永久删除“{note}”？此操作无法撤销。', { note: item.title }) })) return;
     if (tripId) await post('/trip', { action: 'deleted_delete', trip_id: tripId, note_id: item.id });
     else await post('/deleted', { action: 'delete', id: item.id });
@@ -1023,7 +1079,7 @@ function App() {
   }
   // What the open page can do, for the command palette; each runs exactly as its button does.
   function paletteCommands(): PaletteCommand[] {
-    const library = !tripId && !publicMode; const reading = note && !editing && !note.unavailable;
+    const library = !tripId; const reading = note && !editing && !note.unavailable;
     const edit = () => startEditing(note!);
     return [
       library && { label: t('New note', '新建笔记'), icon: 'note-plus', run: () => void run(() => startNote(selectedFolderId)) },
@@ -1068,8 +1124,8 @@ function App() {
     }
     const result = await importNotes(entries, name, importTarget.current, {
       folder: async (folderName, parentId) => (await post<Folder>('/folder', { action: 'create', name: folderName.slice(0, 80),
-        parent_id: parentId })).id,
-      note: (fields) => post<Note>('/save', { ...fields, content: '' }),
+        parent_id: parentId, visibility: scope })).id,
+      note: (fields) => post<Note>('/save', { ...fields, content: '', visibility: scope }),
       write: async (item, content) => { await post<Note>('/save', { id: item.id, version: item.version, title: item.title, content }); },
       upload: async (file) => (await uploadAttachment(invoke, file)).source,
       progress: (done, total) => setStatus(t('Importing… {percent}%', '正在导入… {percent}%', { percent: Math.round(done / total * 100) })),
@@ -1081,7 +1137,8 @@ function App() {
       { files: result.skipped.join(', ') }));
   }
   async function startNote(folderId: string | null) {
-    if (await discard()) { setNote(null); setDraft({ ...empty, folder_id: folderId }); setImageSources({}); setEditing(true); }
+    if (!await discard()) return;
+    setNote(null); setDraft({ ...empty, visibility: scope, folder_id: folderId }); setImageSources({}); setEditing(true);
   }
   // Writing hides the comments; a trip's menu offers it only to the trip's editors, the library's to the note's.
   function startEditing(item: Note) {
@@ -1119,7 +1176,7 @@ function App() {
       : t('A full copy will remain with this trip even if you delete the original or leave. Import a snapshot?',
         '完整副本会保留在这次旅行中，即使你删除原文或离开旅行。确认导入快照？');
     const confirmLabel = linkMode === 'live' ? t('Share', '共享') : t('Import', '导入');
-    if (!await trek.confirm({ message, confirmLabel, danger: false })) return;
+    if (!await confirm({ title: t('Add to trip', '添加到旅行'), message, confirmLabel })) return;
     await post('/link', { note_id: note.id, trip_id: Number(target), day_id: dayId || null, mode: linkMode });
     await loadLinkedTrips(note);
     setStatus(t('Added to trip. With Trip Fieldnotes installed, open it in the trip’s Trip Fieldnotes tab.',
@@ -1127,7 +1184,7 @@ function App() {
   }
   const threads = threadsOf(comments);
   const openThreads = threads.filter((thread) => !thread.root.resolved_at).length;
-  const visibleFolders = folders.filter((folder) => !publicMode || folder.public_path);
+  const visibleFolders = tripId ? folders : publicMode ? folders.filter((folder) => folder.public_path) : privateFolders(folders, notes);
   const permissionFolder = folders.find((folder) => folder.id === permissionFolderId);
   // Search results keep the server's order, best matches first.
   const listedNotes = tripId && results === null ? sortItems(notes, (item) => item.title || '', sorting, collator) : notes;
@@ -1142,10 +1199,18 @@ function App() {
   const finder = finderIndex([...visibleFolders].sort((a, b) => collator.compare(a.name, b.name)),
     listedNotes.map((item) => item.unavailable ? { ...item, title: unavailableTitle } : item));
   const finderPath = finder.pathTo(selectedFolderId);
+  // A folder that moved to the other library leaves this one; the nearest folder above it that stays takes the selection.
+  useEffect(() => {
+    if (!selectedFolderId || finder.folder(selectedFolderId) || !folders.length) return;
+    const parentOf = (folderId: string | null) => folders.find((item) => item.id === folderId)?.parent_id || null;
+    let nearest = parentOf(selectedFolderId);
+    while (nearest && !finder.folder(nearest)) nearest = parentOf(nearest);
+    setSelectedFolderId(nearest);
+  });
   // Finder's context menus: what a note, a folder, or the empty space of a column can do for this reader.
   function finderMenuItems(target: FinderTarget<Folder, Note>): ContextMenuItem[] {
     const canCreate = (folderId: string | null) => tripId ? canEditTrip
-      : !publicMode && (!folderId || finder.folder(folderId)?.role === 'editor');
+      : !folderId || finder.folder(folderId)?.role === 'editor';
     const creating = (folderId: string | null): ContextMenuItem[] => canCreate(folderId) ? [
       tripId ? { label: t('New note for this trip', '为这次旅行新建笔记'), icon: 'note-plus', onSelect: () => createForCurrentTrip(folderId) }
         : { label: t('New note', '新建笔记'), icon: 'note-plus', onSelect: () => void run(() => startNote(folderId)) },
@@ -1168,7 +1233,7 @@ function App() {
         item.mode === 'snapshot' ? action(t('Edit snapshot', '编辑快照'), 'edit', () => openToEdit(item))
           : item.can_snapshot && action(t('Convert to snapshot', '转为快照'), 'snapshot', () => convertToSnapshot(item)),
         'separator' as const, remove] : []
-        : !publicMode && owns(item) ? [action(t('Edit', '编辑'), 'edit', () => openToEdit(item)),
+        : owns(item) ? [action(t('Edit', '编辑'), 'edit', () => openToEdit(item)),
           action(t('Sharing', '共享'), 'share', async () => { if (await choose(item)) openShare(); }), 'separator' as const,
           action(t('Delete note', '删除笔记'), 'trash', () => deleteNote(item), true)] : [];
       return tidy([action(t('Open', '打开'), 'note', () => choose(item)),
@@ -1180,10 +1245,10 @@ function App() {
       return tidy([
         { label: t('Open', '打开'), icon: 'folder', onSelect: () => void run(() => selectFolder(folder.id), { silent: true }) },
         'separator', ...creating(folder.id),
-        ...(folder.can_manage && !publicMode && !tripId ? ['separator' as const,
+        ...(folder.can_manage && !tripId ? ['separator' as const,
           { label: t('Permissions', '权限'), icon: 'settings' as const,
             onSelect: () => void run(() => openFolderPermissions(folder)) }] : []),
-        ...(folder.can_manage && !publicMode && (!tripId || canEditTrip) ? [...(tripId ? ['separator' as const] : []),
+        ...(folder.can_manage && (!tripId || canEditTrip) ? [...(tripId ? ['separator' as const] : []),
           { label: t('Delete', '删除'), icon: 'trash' as const, danger: true, onSelect: () => void run(() => deleteFolder(folder)) }] : []),
       ]);
     }
@@ -1208,7 +1273,7 @@ function App() {
     setDragged({ kind: 'note', id: item.id, from: finder.parentOf(item) });
     event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', item.id);
   }
-  const canMoveFolder = (folder: Folder) => !publicMode && folder.can_manage && (!tripId || canEditTrip);
+  const canMoveFolder = (folder: Folder) => folder.can_manage && (!tripId || canEditTrip);
   function dragFolderStart(folder: Folder, event: React.DragEvent<HTMLButtonElement>) {
     if (!canMoveFolder(folder)) { event.preventDefault(); return; }
     setDragged({ kind: 'folder', id: folder.id, from: folder.parent_id || null });
@@ -1252,6 +1317,24 @@ function App() {
       },
     };
   }
+  // The other library's tab takes a dragged note or folder there, as its visibility setting does.
+  function libraryDropProps(visibility: 'private' | 'public') {
+    const key = `library-${visibility}`;
+    const allowed = () => Boolean(dragged) && !tripId && visibility !== scope;
+    const over = (event: React.DragEvent<HTMLElement>) => {
+      if (!allowed()) return;
+      event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(key);
+    };
+    return {
+      onDragEnter: over, onDragOver: over,
+      onDragLeave: () => setDropTarget((current) => current === key ? null : current),
+      onDrop: (event: React.DragEvent<HTMLElement>) => {
+        event.preventDefault();
+        const item = dragged; const ok = allowed(); endDrag();
+        if (item && ok) void run(() => moveToLibrary(item.kind, item.id, item.from, visibility));
+      },
+    };
+  }
   const dragClass = (key: string) =>
     `${dropTarget === key ? ' is-drop-target' : ''}${landedKey === key ? ' is-landed' : ''}${dragged?.id === key ? ' is-dragging' : ''}`;
 
@@ -1275,10 +1358,6 @@ function App() {
           }} />
       </div>
     </div>
-    {!tripId && <select className="trek-select" value={newFolderVisibility}
-      onChange={(event) => setNewFolderVisibility(event.target.value as 'private' | 'public')}>
-      <option value="private">{t('Private folder', '私有文件夹')}</option><option value="public">{t('Public folder', '公有文件夹')}</option>
-    </select>}
     <button className="trek-btn trek-btn--secondary" disabled={!newFolderName.trim()}>{t('Create folder', '创建文件夹')}</button>
   </form>;
   const sortMenu = <div ref={sortRoot} className="fn-sort">
@@ -1305,11 +1384,11 @@ function App() {
     return day?.day_number ? t('Day {number}', '第 {number} 天', { number: day.day_number }) : day?.date || t('Day', '日程');
   };
   const openFolder = selectedFolderId ? finder.folder(selectedFolderId) : undefined;
-  // Recently deleted shows while it holds a note, or while it is open: in the private library, and on a trip for its editors.
   // The folder or note an open Finder menu acts on; a column's own menu has none.
   const menuSubject = finderMenu?.target.kind === 'folder' ? { id: finderMenu.target.folder.id, label: finderMenu.target.folder.name }
     : finderMenu?.target.kind === 'note' ? { id: finderMenu.target.note.id, label: finderMenu.target.note.title } : null;
-  const binShown = (tripId ? canEditTrip : !publicMode) && (deletedNotes.length > 0 || binOpen);
+  // Recently deleted shows while it holds a note, or while it is open: in each library, and on a trip for its editors.
+  const binShown = (!tripId || canEditTrip) && (deletedNotes.length > 0 || binOpen);
   // The top of the notes has one name wherever it shows; leaving a note returns to the trip, or to the library it came from.
   const rootLabel = publicMode ? t('Public library', '公开图书馆') : t('All notes', '全部笔记');
   const backLabel = tripId ? tripTitle || rootLabel : publicMode ? rootLabel : t('Library', '图书馆');
@@ -1366,12 +1445,12 @@ function App() {
     {!binOpen && sortMenu}
     <IconButton label={t('Refresh', '刷新')} icon="refresh" className="fn-refresh" disabled={busy}
       onClick={() => void run(async () => { await loadFolders(); await load(); })} />
-    {!publicMode && !binOpen && (!tripId || canEditTrip) && <div className="fn-new-folder">
+    {!binOpen && (!tripId || canEditTrip) && <div className="fn-new-folder">
       <IconButton label={t('New folder', '新建文件夹')} icon="folder-plus" aria-expanded={newFolderOpen} onClick={toggleNewFolder} />
       {newFolderOpen && <div className="fn-new-folder-popover">{newFolderForm}</div>}
     </div>}
     {/* A new note lands in the open folder when you may write there, otherwise at the top of the library. */}
-    {!publicMode && !tripId && !binOpen && <IconButton label={t('New note', '新建笔记')} icon="note-plus" className="fn-new-note"
+    {!tripId && !binOpen && <IconButton label={t('New note', '新建笔记')} icon="note-plus" className="fn-new-note"
       disabled={busy} onClick={() => void run(() => startNote(openFolder?.role === 'editor' ? openFolder.id : null))} />}
     {/* A trip's note is written in the library, which keeps its original, and comes back here linked to the open folder. */}
     {tripId && canEditTrip && !binOpen && <IconButton label={t('New note for this trip', '为这次旅行新建笔记')} icon="note-plus"
@@ -1405,10 +1484,12 @@ function App() {
     {/* Access is read here and changed from the folder's context menu; a trip's folders are open to everyone on the trip. */}
     {!tripId && <section className="fn-preview-access" aria-labelledby="preview-access-title">
       <h3 id="preview-access-title">{t('People with access', '可访问成员')}</h3>
-      <p className="trek-muted fn-preview-access-note">{openFolder.visibility === 'public'
+      <p className="trek-muted fn-preview-access-note">{openFolder.visibility === 'public' && !publicMode
+        ? t('Its name shows in the public library; what it holds here stays private.', '它的名称会显示在公开图书馆，这里的内容仍然保持私人。')
+        : openFolder.visibility === 'public'
         ? t('Every signed-in member can read it in the public library.', '所有已登录成员都能在公开图书馆里阅读。')
         : t('Only the owner and the people they invite can open it.', '只有所有者和受邀的成员可以打开。')}</p>
-      {openFolder.can_manage && !publicMode && folderAccess?.folderId === openFolder.id && (folderAccess.people.length
+      {openFolder.can_manage && folderAccess?.folderId === openFolder.id && (folderAccess.people.length
         ? <ul className="fn-preview-people">{folderAccess.people.map((item) => <li key={item.user_id}>
           <Avatar name={personName({ ...item.user, id: item.user_id })} color={item.user.color} />
           <span>{personName({ ...item.user, id: item.user_id })}</span>
@@ -1509,12 +1590,12 @@ function App() {
           {tripId && canEditTrip && note.mode === 'snapshot' && <IconButton label={t('Edit snapshot', '编辑快照')} icon="edit"
             variant="secondary" disabled={busy} onClick={() => startEditing(note)} />}
           {tripId && canEditTrip && note.mode === 'snapshot' && historyButton}
-          {!tripId && !publicMode && note.can_edit && <IconButton label={t('Edit', '编辑')} icon="edit" variant="secondary"
+          {!tripId && note.can_edit && <IconButton label={t('Edit', '编辑')} icon="edit" variant="secondary"
             disabled={busy} onClick={() => startEditing(note)} />}
-          {!tripId && !publicMode && <IconButton label={t('Sharing', '共享')} icon="share" variant="secondary" className="fn-reader-share"
+          {!tripId && <IconButton label={t('Sharing', '共享')} icon="share" variant="secondary" className="fn-reader-share"
             aria-haspopup="dialog" disabled={busy} onClick={openShare} />}
-          {!tripId && !publicMode && note.can_edit && historyButton}
-          {!tripId && !publicMode && owns(note) && <IconButton label={t('Delete note', '删除笔记')} icon="trash" variant="danger"
+          {!tripId && note.can_edit && historyButton}
+          {!tripId && owns(note) && <IconButton label={t('Delete note', '删除笔记')} icon="trash" variant="danger"
             disabled={busy} onClick={() => void run(() => deleteNote(note))} />}
           {tripId && canEditTrip && <IconButton label={t('Remove from trip', '从旅行移除')} icon="trash" variant="danger"
             disabled={busy} onClick={() => void run(() => removeFromTrip())} />}
@@ -1538,7 +1619,7 @@ function App() {
     </>}
   </section>;
 
-  return <main className="fn-shell">
+  return <main className="fn-shell" data-view={note || editing ? undefined : 'library'}>
     <header className="fn-header">
       <div className="fn-heading">
         <span className="fn-symbol" aria-hidden="true"><i /><i /><i /></span>
@@ -1556,9 +1637,11 @@ function App() {
     {!tripId && !note && !editing && <div className="fn-scope-switcher" role="tablist" aria-label={t('Library scope', '图书馆范围')}
       data-scope={publicMode ? 'public' : 'private'}>
       <span className="fn-scope-indicator" aria-hidden="true" />
-      <button type="button" role="tab" aria-selected={!publicMode} className="fn-scope-tab" disabled={busy}
+      <button type="button" role="tab" aria-selected={!publicMode} className={`fn-scope-tab${dragClass('library-private')}`}
+        disabled={busy} {...libraryDropProps('private')}
         onClick={() => void run(() => switchLibrary(false))}>{t('Private library', '私人图书馆')}</button>
-      <button type="button" role="tab" aria-selected={publicMode} className="fn-scope-tab" disabled={busy}
+      <button type="button" role="tab" aria-selected={publicMode} className={`fn-scope-tab${dragClass('library-public')}`}
+        disabled={busy} {...libraryDropProps('public')}
         onClick={() => void run(() => switchLibrary(true))}>{t('Public library', '公开图书馆')}</button>
     </div>}
     {note || editing ? <div className="fn-layout fn-layout-reader" data-tree={drawers.tree || undefined}
@@ -1635,7 +1718,7 @@ function App() {
         {folderMemberEditor()}
       </section>
     </Modal>}</Presence>
-    <Presence>{historyOpen && note && (tripId ? note.mode === 'snapshot' : !publicMode) && <Modal dialog={historyDialog}
+    <Presence>{historyOpen && note && (tripId ? note.mode === 'snapshot' : note.can_edit) && <Modal dialog={historyDialog}
       titleId="history-title" eyebrow={t('Version history', '版本历史')} title={note.title} className="fn-history-modal" t={t}
       onClose={() => setHistoryOpen(false)}>
       <HistoryView noteId={note.id} current={note} invoke={tripId ? tripInvoke : invoke} locale={context?.locale} t={t} busy={busy}
@@ -1643,7 +1726,7 @@ function App() {
         render={(content, versionId) => <VersionText key={versionId || 'current'} content={content} linkText={linkText}
           load={(text) => versionAssets(text, versionId)} />} />
     </Modal>}</Presence>
-    <Presence>{shareOpen && note && !tripId && !publicMode && <Modal dialog={shareDialog} titleId="share-title" eyebrow={t('Sharing', '共享')}
+    <Presence>{shareOpen && note && !tripId && <Modal dialog={shareDialog} titleId="share-title" eyebrow={t('Sharing', '共享')}
       title={note.title} className="fn-share-modal" t={t} onClose={() => void run(closeShare, { silent: true })}>
       {owns(note) && <section className="fn-modal-section fn-visibility" aria-labelledby="visibility-heading">
         <div className="fn-modal-section-heading"><h3 id="visibility-heading">{t('Visibility', '可见范围')}</h3></div>
@@ -1713,7 +1796,9 @@ function App() {
     {palette !== null && <Palette start={palette} findNotes={findNotes} commands={paletteCommands()} t={t}
       headings={noteHeadings} onNote={(item) => follow(item.id)} onClose={() => setPalette(null)}
       onHeading={jumpTo} />}
-    <FloatingNotice message={notice} working={slow ? t('Working…', '处理中…') : ''} trouble={collabTrouble} />
+    <Presence>{confirmRequest && <ConfirmDialog request={confirmRequest} t={t} onAnswer={answerConfirm} />}</Presence>
+    {/* Waiting on an answer is not work, so "Working…" waits for the question to close. */}
+    <FloatingNotice message={notice} working={slow && !confirmRequest ? t('Working…', '处理中…') : ''} trouble={collabTrouble} />
   </main>;
 }
 
@@ -1834,6 +1919,43 @@ function Presence({ children }: { children: React.ReactNode }) {
     {children || last.current}</div>;
 }
 
+// Asks before acting, in the plugin's own window rather than the browser's, above any window already open. Escape or a press
+// outside cancels; a dangerous action starts on Cancel, so Enter alone never deletes. Keys stop here while it is open, so the
+// window beneath does not take them too; once answered it leaves inert and lets them through.
+function ConfirmDialog({ request, t, onAnswer }: { request: ConfirmRequest; t: Translate; onAnswer: (answer: boolean) => void }) {
+  const dialog = useRef<HTMLElement>(null);
+  const pressed = useRef(false);
+  useEffect(() => {
+    const buttons = () => Array.from(dialog.current?.querySelectorAll<HTMLButtonElement>('button') ?? []);
+    const focusFirst = window.setTimeout(() => buttons()[request.danger ? 0 : 1]?.focus(), 0);
+    const keys = (event: KeyboardEvent) => {
+      if (dialog.current?.closest('[inert]')) return;
+      event.stopImmediatePropagation();
+      if (event.key === 'Escape') { event.preventDefault(); onAnswer(false); return; }
+      if (event.key !== 'Tab') return;
+      event.preventDefault();
+      const all = buttons(); const at = all.indexOf(document.activeElement as HTMLButtonElement);
+      all[(at + (event.shiftKey ? -1 : 1) + all.length) % all.length]?.focus();
+    };
+    window.addEventListener('keydown', keys, true);
+    return () => { window.clearTimeout(focusFirst); window.removeEventListener('keydown', keys, true); };
+  }, [request]);
+  return <div className="fn-modal-backdrop fn-confirm-backdrop" role="presentation"
+    onMouseDown={(event) => { pressed.current = event.target === event.currentTarget; }}
+    onClick={(event) => { if (pressed.current && event.target === event.currentTarget) onAnswer(false); pressed.current = false; }}>
+    <section ref={dialog} className="fn-modal fn-confirm trek-card" role="alertdialog" aria-modal="true"
+      aria-labelledby="fn-confirm-title" aria-describedby="fn-confirm-message">
+      <h2 id="fn-confirm-title">{request.title}</h2>
+      <p id="fn-confirm-message" className="fn-confirm-message">{request.message}</p>
+      <div className="fn-confirm-actions">
+        <button type="button" className="trek-btn trek-btn--secondary" onClick={() => onAnswer(false)}>{t('Cancel', '取消')}</button>
+        <button type="button" className={`trek-btn ${request.danger ? 'trek-btn--danger' : 'trek-btn--primary'}`}
+          onClick={() => onAnswer(true)}>{request.confirmLabel}</button>
+      </div>
+    </section>
+  </div>;
+}
+
 // A window over the page: the header stays put and the body scrolls inside the rounded card. A press on the backdrop closes it.
 function Modal({ dialog, titleId, eyebrow, title, className, t, onClose, children }: {
   dialog: React.RefObject<HTMLElement | null>; titleId: string; eyebrow?: string; title: string; className?: string; t: Translate;
@@ -1877,9 +1999,11 @@ function FolderSettings({ folder, idPrefix, t, onIconDraft, onIcon, onVisibility
     <div className="fn-setting-field">
       <label className="trek-label" htmlFor={`${idPrefix}-visibility`}>{t('Visibility', '可见范围')}</label>
       <select id={`${idPrefix}-visibility`} className="trek-select" value={folder.visibility}
-        onChange={(event) => onVisibility(event.target.value)}>
+        aria-describedby={`${idPrefix}-visibility-hint`} onChange={(event) => onVisibility(event.target.value)}>
         <option value="private">{t('Private folder', '私有文件夹')}</option><option value="public">{t('Public folder', '公有文件夹')}</option>
       </select>
+      <small id={`${idPrefix}-visibility-hint`} className="trek-muted">{t('Everything in it that you own moves to that library too.',
+        '其中属于你的内容也会一起移到对应的图书馆。')}</small>
     </div>
   </>;
 }

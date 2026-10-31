@@ -492,6 +492,45 @@ async function folderTree(ctx) {
 }
 const writeFolders = (ctx, sql, ...args) => ctx.db.tx([{ sql, args }, FOLDERS_CHANGED]);
 
+// A note or folder lives in one library, so moving one between them takes along everything inside that the mover owns; what
+// others own keeps its own setting. Going public also opens the private folders above it, their rows only, so it shows there.
+async function libraryWrites(ctx, userId, { folderId = null, noteId = null, parentId = null }, visibility, tree = null) {
+  const folders = tree || await folderTree(ctx);
+  const inside = [];
+  for (const queue = folderId ? [folderId] : [], seen = new Set(queue); queue.length;) {
+    const current = queue.shift(); inside.push(current);
+    for (const folder of folders.values()) {
+      if (folder.parent_id === current && !seen.has(folder.id)) { seen.add(folder.id); queue.push(folder.id); }
+    }
+  }
+  const above = [];
+  for (let current = visibility === 'public' && parentId ? folders.get(parentId) : null, steps = 0; current && steps < 64; steps += 1) {
+    if (current.visibility !== 'public') {
+      if (current.owner_id !== userId) fail(403, 'A folder above it is private, and only its owner can make it public.');
+      above.push(current.id);
+    }
+    current = current.parent_id ? folders.get(current.parent_id) : null;
+  }
+  const folderIds = [...inside.filter((item) => folders.get(item)?.owner_id === userId), ...above];
+  return [
+    ...(folderIds.length ? [{ sql: 'UPDATE folders SET visibility = ?, updated_at = ? WHERE id IN (SELECT value FROM json_each(?))',
+      args: [visibility, new Date().toISOString(), JSON.stringify(folderIds)] }, FOLDERS_CHANGED] : []),
+    ...(noteId || inside.length ? [{ sql: `UPDATE notes SET visibility = ? WHERE owner_id = ? AND archived = 0
+      AND (id = ? OR folder_id IN (SELECT value FROM json_each(?)))`, args: [visibility, userId, noteId, JSON.stringify(inside)] }] : []),
+  ];
+}
+
+// The top of the notes belongs to both libraries; a folder belongs to the public one when every folder above it is public.
+const inPublicLibrary = (userId, folderId, tree) =>
+  !folderId || Boolean(folderAccessFromRows(userId, folderId, tree, new Map())?.publicPath);
+
+// A move into a folder outside the public library takes what the mover owns back to the private one, so none of it waits there
+// marked public to surface the day someone opens the folders above.
+async function movedWrites(ctx, userId, targetId, moved) {
+  const tree = await folderTree(ctx);
+  return inPublicLibrary(userId, targetId, tree) ? [] : libraryWrites(ctx, userId, moved, 'private', tree);
+}
+
 // `folders` reuses a tree already read for this request.
 async function listAccessData(ctx, userId, includeNoteCollaborators = true, folders = null) {
   const [tree, folderCollaboratorRows, noteCollaboratorRows] = await Promise.all([
@@ -752,9 +791,11 @@ async function folderAction(input, ctx, userId) {
     const duplicate = await ctx.db.query(`SELECT id FROM folders WHERE name = ? AND archived = 0
       AND (parent_id = ? OR (parent_id IS NULL AND ? IS NULL AND owner_id = ?))`, name, parentId, parentId, userId);
     if (duplicate.length) fail(409, 'A folder with this name already exists here.');
-    const folderId = randomUUID(); const now = new Date().toISOString();
-    await writeFolders(ctx, `INSERT INTO folders (id, owner_id, parent_id, name, icon, visibility, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, folderId, userId, parentId, name, folderIcon(input.icon), input.visibility || 'private', now, now);
+    const folderId = randomUUID(); const now = new Date().toISOString(); const visibility = input.visibility || 'private';
+    await ctx.db.tx([...visibility === 'public' ? await libraryWrites(ctx, userId, { parentId }, visibility) : [],
+      { sql: `INSERT INTO folders (id, owner_id, parent_id, name, icon, visibility, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, args: [folderId, userId, parentId, name, folderIcon(input.icon), visibility, now, now] },
+      FOLDERS_CHANGED]);
     return listed(folderId);
   }
   if (input.action === 'move_note') {
@@ -762,7 +803,8 @@ async function folderAction(input, ctx, userId) {
     // Moving re-scopes folder inheritance, which is sharing control, so it stays with the owner like visibility.
     if ((await editable(ctx, userId, noteId)).owner_id !== userId) fail(403, 'Only the owner can move a note.');
     const target = await folderForWrite(ctx, userId, input.folder_id);
-    await ctx.db.exec('UPDATE notes SET folder_id = ?, updated_at = ? WHERE id = ?', target?.id || null, new Date().toISOString(), noteId);
+    await ctx.db.tx([{ sql: 'UPDATE notes SET folder_id = ?, updated_at = ? WHERE id = ?',
+      args: [target?.id || null, new Date().toISOString(), noteId] }, ...await movedWrites(ctx, userId, target?.id, { noteId })]);
     return readable(ctx, userId, noteId);
   }
   const folderId = id(input.folder_id);
@@ -773,12 +815,13 @@ async function folderAction(input, ctx, userId) {
     const parentId = input.parent_id ? id(input.parent_id) : null;
     if (parentId) await folderForWrite(ctx, userId, parentId);
     await checkReparent(ctx, 'folders', folder, parentId, parentId ? {} : { owner_id: userId });
-    await writeFolders(ctx, 'UPDATE folders SET parent_id = ?, updated_at = ? WHERE id = ?', parentId, now, folderId);
+    await ctx.db.tx([{ sql: 'UPDATE folders SET parent_id = ?, updated_at = ? WHERE id = ?', args: [parentId, now, folderId] },
+      FOLDERS_CHANGED, ...await movedWrites(ctx, userId, parentId, { folderId })]);
     return listed(folderId);
   }
   if (input.action === 'visibility') {
     if (!['private', 'public'].includes(input.visibility)) fail(400, 'Invalid folder visibility.');
-    await writeFolders(ctx, 'UPDATE folders SET visibility = ?, updated_at = ? WHERE id = ?', input.visibility, now, folderId);
+    await ctx.db.tx(await libraryWrites(ctx, userId, { folderId, parentId: folder.parent_id }, input.visibility));
     return listed(folderId);
   }
   if (input.action === 'icon') {
@@ -1597,8 +1640,9 @@ async function listNotes(ctx, userId, { search = '', offset = 0, publicOnly = fa
     // A note whose folder chain is broken stays out of the list rather than failing it.
     let rights;
     try { rights = noteAccessFromRows(userId, row, access); } catch { continue; }
-    const listed = publicOnly ? row.visibility === 'public' && rights.publicReadable
-      : row.owner_id === userId || Boolean(rights.directRole) || rights.inheritedRole > 0;
+    // Each note sits in one library: the public one holds what every member can read, the private one the rest of yours.
+    const listed = publicOnly ? rights.publicReadable
+      : !rights.publicReadable && (row.owner_id === userId || Boolean(rights.directRole) || rights.inheritedRole > 0);
     if (listed) visible.push(search ? { ...note, score: found.score, snippet: found.snippet } : note);
   }
   const collator = new Intl.Collator(locale, { numeric: true, sensitivity: 'base' });
@@ -1649,26 +1693,39 @@ async function deletedNote(ctx, userId, noteId) {
   if (!row) fail(404, 'This note is no longer in Recently deleted.');
   return row;
 }
-async function listDeleted(ctx, userId, noteId) {
+// Recovering puts a note back where it was, or at the top of the library when that folder is gone or no longer the owner's to
+// write in.
+function recoveryFolder(userId, row, access) {
+  const folder = row.folder_id ? folderAccessFromRows(userId, row.folder_id, access.folders, access.folderCollaborators) : null;
+  return folder && roleValue(folder.role) >= 2 ? row.folder_id : null;
+}
+// Each library keeps its own Recently deleted: a note waits in the one recovering it would put it back into, so it is found
+// where it was deleted. Without a library the list holds every deleted note of the owner's.
+async function listDeleted(ctx, userId, noteId, library) {
   if (noteId) {
     const row = await deletedNote(ctx, userId, noteId);
     return { ...decode(row), deleted_at: row.archived_at, purge_at: purgeAt(row.archived_at) };
   }
-  const rows = await ctx.db.query(`SELECT id, title, icon, archived_at FROM notes WHERE owner_id = ? AND archived = 1 AND archived_at >= ?
-    ORDER BY archived_at DESC, id`, userId, deletedBefore());
-  return rows.map((row) => ({ id: row.id, title: row.title, icon: row.icon, deleted_at: row.archived_at,
-    purge_at: purgeAt(row.archived_at) }));
+  if (library !== undefined && !['private', 'public'].includes(library)) fail(400, 'Invalid library.');
+  const [rows, access] = await Promise.all([ctx.db.query(`SELECT id, title, icon, archived_at, visibility, folder_id FROM notes
+    WHERE owner_id = ? AND archived = 1 AND archived_at >= ? ORDER BY archived_at DESC, id`, userId, deletedBefore()),
+  library ? listAccessData(ctx, userId, false) : null]);
+  const returnsPublic = (row) => row.visibility === 'public'
+    && inPublicLibrary(userId, recoveryFolder(userId, row, access), access.folders);
+  return rows.filter((row) => !library || returnsPublic(row) === (library === 'public')).map((row) => ({ id: row.id, title: row.title,
+    icon: row.icon, deleted_at: row.archived_at, purge_at: purgeAt(row.archived_at) }));
 }
-// Recovering puts a note back where it was, or at the top of the library when that folder is gone or no longer the owner's to
-// write in; its trip references and sharing come back with it. Deleting permanently cannot be undone.
+// A recovered note's trip references and sharing come back with it. Deleting permanently cannot be undone.
 async function deletedAction(ctx, userId, input) {
   const row = await deletedNote(ctx, userId, input.id);
   if (input.action === 'recover') {
-    const folder = row.folder_id ? await folderAccess(ctx, userId, row.folder_id) : null;
-    const folderId = folder && roleValue(folder.role) >= 2 ? row.folder_id : null;
+    const access = await listAccessData(ctx, userId, false);
+    const folderId = recoveryFolder(userId, row, access);
+    // It comes back to the library it waited in, so a note whose folder went private since returns private.
+    const visibility = row.visibility === 'public' && inPublicLibrary(userId, folderId, access.folders) ? 'public' : 'private';
     const { results } = await ctx.db.tx([
-      { sql: `UPDATE notes SET archived = 0, archived_at = NULL, folder_id = ?, version = version + 1
-        WHERE id = ? AND owner_id = ? AND archived = 1`, args: [folderId, row.id, userId] },
+      { sql: `UPDATE notes SET archived = 0, archived_at = NULL, folder_id = ?, visibility = ?, version = version + 1
+        WHERE id = ? AND owner_id = ? AND archived = 1`, args: [folderId, visibility, row.id, userId] },
       ...uploads.referenceOps('', row.content),
     ]);
     if (results[0].changes !== 1) fail(404, 'This note is no longer in Recently deleted.');
@@ -1855,7 +1912,7 @@ async function handle(action, req, ctx) {
   if (action === 'note_settings') {
     const note = await owned(ctx, userId, body.id);
     if (!['private', 'public'].includes(body.visibility)) fail(400, 'Invalid visibility.');
-    await ctx.db.exec('UPDATE notes SET visibility = ? WHERE id = ?', body.visibility, note.id);
+    await ctx.db.tx(await libraryWrites(ctx, userId, { noteId: note.id, parentId: note.folder_id }, body.visibility));
     return owned(ctx, userId, note.id);
   }
   if (action === 'trip_intent') return takeTripNoteIntent(ctx, userId);
@@ -1890,21 +1947,27 @@ async function handle(action, req, ctx) {
       if (folderId !== current.folder_id && current.owner_id !== userId) fail(403, 'Only the owner can move a note.');
       // Only a move needs folder rights; a direct editor of a note in someone else's folder may still save it.
       if (folderId && folderId !== current.folder_id) await folderForWrite(ctx, userId, folderId);
+      // A move out of the public library's folders takes the note back to the private one, as moving it in the library does; a
+      // note made public here opens the folders above it, as the sharing window does.
+      const opens = body.visibility === 'public' && current.visibility !== 'public';
+      const leaves = !opens && folderId !== current.folder_id && !inPublicLibrary(userId, folderId, await folderTree(ctx));
+      const visibility = leaves ? 'private' : body.visibility || current.visibility;
+      if (opens) await ctx.db.tx(await libraryWrites(ctx, userId, { parentId: folderId }, visibility));
       // Omitted tags or properties keep their stored value, so older callers never wipe them.
-      return replaceNote(ctx, userId, current, body.version, { title, content, tags, properties, icon,
-        visibility: body.visibility || current.visibility, folderId });
+      return replaceNote(ctx, userId, current, body.version, { title, content, tags, properties, icon, visibility, folderId });
     }
     const noteId = randomUUID();
     const visibility = body.visibility || 'private';
     const folderId = body.folder_id || null;
     if (folderId) await folderForWrite(ctx, userId, folderId);
+    if (visibility === 'public' && folderId) await ctx.db.tx(await libraryWrites(ctx, userId, { parentId: folderId }, visibility));
     await ctx.db.exec(`INSERT INTO notes (id, owner_id, title, content, tags, properties, icon, visibility, folder_id, created_at,
       updated_at, burst_at, edited_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json_array(?))`,
       noteId, userId, title, content, tags ?? '[]', properties ?? '[]', icon ?? null, visibility, folderId, now, now, now, userId);
     await uploads.track(ctx, '', content);
     return owned(ctx, userId, noteId);
   }
-  if (action === 'deleted') return listDeleted(ctx, userId, query.id);
+  if (action === 'deleted') return listDeleted(ctx, userId, query.id, query.library);
   if (action === 'deleted_action') return deletedAction(ctx, userId, body);
   if (action === 'archive') {
     const current = await owned(ctx, userId, body.id);

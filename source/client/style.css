@@ -9,9 +9,18 @@ body.trek-ui,
   overflow: auto;
 }
 
+/* Sizes grow with the window: at 1280px wide and below they stay as set, from there they rise evenly until 2560px, where a 27-inch
+   display sits, so text and rows keep about the same size on screen across laptops and large displays. --fn-wide runs from 0px
+   to 1px over that span, and each size adds a multiple of it; phones and tablets keep their own rules further down. */
 .fn-shell {
+  --fn-wide: clamp(0px, (100vw - 1280px) / 1280, 1px);
+  --fn-title: calc(26px + var(--fn-wide) * 4);
+  --fn-h1: calc(25px + var(--fn-wide) * 4);
+  --fn-h2: calc(21px + var(--fn-wide) * 3);
+  --fn-h3: calc(17px + var(--fn-wide) * 2);
   box-sizing: border-box;
-  max-width: 1160px;
+  max-width: calc(1160px + var(--fn-wide) * 480);
+  font-size: calc(1em + var(--fn-wide) * 2);
   margin: 0 auto;
   padding: 28px 24px 40px;
 }
@@ -62,7 +71,7 @@ body.trek-ui,
 
 .fn-header h1 {
   margin: 0;
-  font-size: 26px;
+  font-size: var(--fn-title);
   line-height: 1.25;
   letter-spacing: -.02em;
 }
@@ -85,7 +94,7 @@ body.trek-ui,
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 3px;
-  max-width: 420px;
+  max-width: calc(420px + var(--fn-wide) * 80);
   margin: 18px auto 0;
   padding: 3px;
   border: 1px solid var(--border-primary);
@@ -99,9 +108,11 @@ body.trek-ui,
 /* One tab's width plus the 3px gap; mirrored in RTL, where the first tab sits on the right. */
 .fn-scope-switcher[data-scope="public"] .fn-scope-indicator { transform: translateX(calc(100% + 3px)); }
 [dir="rtl"] .fn-scope-switcher[data-scope="public"] .fn-scope-indicator { transform: translateX(calc(-100% - 3px)); }
-.fn-scope-tab { min-height: 34px; border: 0; border-radius: 9px; color: var(--text-secondary); background: transparent; font: inherit;
-  cursor: pointer; transition: color 150ms ease; }
+.fn-scope-tab { min-height: calc(34px + var(--fn-wide) * 6); border: 0; border-radius: 9px; color: var(--text-secondary);
+  background: transparent; font: inherit; cursor: pointer; transition: color 150ms ease; }
 .fn-scope-tab[aria-selected="true"] { color: var(--text-primary); font-weight: 600; }
+/* The other library's tab takes a dragged note or folder, ringed as a folder row is. */
+.fn-scope-tab.is-drop-target { box-shadow: inset 0 0 0 2px var(--accent); }
 .fn-scope-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .fn-layout {
@@ -214,6 +225,12 @@ body.trek-ui,
 .fn-modal .fn-icon-field small { z-index: 4; inset-inline-start: 0; top: calc(100% + 6px); transform: translateY(-3px); }
 .fn-modal .fn-icon-field:hover small, .fn-modal .fn-icon-field:focus-within small { opacity: 1; transform: translateY(0); }
 .fn-modal-section { margin-top: 26px; }
+/* A question before acting sits above any window already open, and is only as wide as a sentence or two needs. */
+.fn-confirm-backdrop { z-index: 35; }
+.fn-confirm { width: min(420px, 100%); padding: 22px; gap: 20px; }
+.fn-confirm h2 { margin: 0 0 -12px; font-size: 17px; font-weight: 600; line-height: 1.3; text-wrap: balance; }
+.fn-confirm-message { margin: 0; color: var(--text-secondary); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.fn-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .fn-modal-section-heading { display: grid; gap: 4px; margin-bottom: 11px; }
 .fn-modal-section-heading h3 { margin: 0; font-size: 14px; }
 .fn-modal-section-heading p { margin: 0; font-size: 12px; }
@@ -345,7 +362,8 @@ body.trek-ui,
 @keyframes fn-landed-icon { 0% { transform: scale(1); } 40% { transform: scale(1.3); } 100% { transform: scale(1); } }
 @keyframes fn-content-fade { from { opacity: .7; } to { opacity: 1; } }
 .fn-detail-header { align-items: flex-start; }
-.fn-detail-header h2 { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 26px; line-height: 1.25; text-wrap: balance; }
+.fn-detail-header h2 { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: var(--fn-title); line-height: 1.25;
+  text-wrap: balance; }
 .fn-editor-canvas { border: 1px solid var(--border-primary); border-radius: 12px; background: var(--bg-input); color: var(--text-primary); }
 .fn-editor-canvas:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 22%, transparent); }
 .fn-editor-canvas .cm-editor { min-height: 340px; border-radius: 12px; outline: none; }
@@ -355,9 +373,9 @@ body.trek-ui,
 .fn-editor-canvas .cm-selectionBackground, .fn-editor-canvas .cm-focused .cm-selectionBackground,
   .fn-editor-canvas .cm-content ::selection { background: color-mix(in oklch, var(--accent) 22%, transparent); }
 .fn-md-h { font-weight: 700; line-height: 1.3; text-wrap: balance; }
-.fn-md-h1 { padding-block: .45em .2em !important; font-size: 25px; }
-.fn-md-h2 { padding-block: .4em .15em !important; font-size: 21px; }
-.fn-md-h3 { padding-block: .3em .1em !important; font-size: 17px; }
+.fn-md-h1 { padding-block: .45em .2em !important; font-size: var(--fn-h1); }
+.fn-md-h2 { padding-block: .4em .15em !important; font-size: var(--fn-h2); }
+.fn-md-h3 { padding-block: .3em .1em !important; font-size: var(--fn-h3); }
 .fn-md-mark, .fn-md-url { color: var(--text-secondary); opacity: .62; font-weight: 400; }
 .fn-md-strong { font-weight: 700; }
 .fn-md-em { font-style: italic; }
@@ -563,9 +581,9 @@ img.fn-note-icon--large { width: 48px; height: 48px; border-radius: 9px; }
 /* An embedded note reads the same inside the editor as on the page. */
 :is(.fn-markdown, .fn-embed-body) img { display: block; max-width: 100%; height: auto; margin: 8px 0; border-radius: 9px; }
 :is(.fn-markdown, .fn-embed-body) :is(h1, h2, h3) { line-height: 1.3; text-wrap: balance; }
-:is(.fn-markdown, .fn-embed-body) h1 { font-size: 25px; }
-:is(.fn-markdown, .fn-embed-body) h2 { font-size: 21px; }
-:is(.fn-markdown, .fn-embed-body) h3 { font-size: 17px; }
+:is(.fn-markdown, .fn-embed-body) h1 { font-size: var(--fn-h1); }
+:is(.fn-markdown, .fn-embed-body) h2 { font-size: var(--fn-h2); }
+:is(.fn-markdown, .fn-embed-body) h3 { font-size: var(--fn-h3); }
 :is(.fn-markdown, .fn-embed-body) pre { padding: 14px; overflow-x: auto; background: var(--bg-secondary);
   border: 1px solid var(--border-primary); border-radius: 9px; }
 :is(.fn-markdown, .fn-embed-body) blockquote { margin-inline: 0; padding: 10px 14px; border: 1px solid var(--border-primary);
@@ -695,48 +713,81 @@ button:disabled { cursor: not-allowed; }
 .fn-finder-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border-primary); }
 .fn-finder-path { display: flex; flex: 1; align-items: center; gap: 2px; min-width: 0; overflow: hidden; }
 .fn-finder-path > .fn-icon { flex: none; width: 12px; height: 12px; color: var(--text-faint); }
-.fn-finder-crumb { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 6px; min-width: 0; max-width: 200px; padding: 5px 8px;
-  overflow: hidden; border: 0; border-radius: 7px; color: var(--text-secondary); background: transparent; font: inherit; font-size: 13px;
+.fn-finder-crumb { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 6px; min-width: 0;
+  max-width: calc(200px + var(--fn-wide) * 60); padding: 5px 8px;
+  overflow: hidden; border: 0; border-radius: 7px; color: var(--text-secondary); background: transparent; font: inherit;
+  font-size: calc(13px + var(--fn-wide) * 2);
   white-space: nowrap; text-overflow: ellipsis; cursor: pointer; transition: background-color 150ms ease, color 150ms ease; }
 span.fn-finder-crumb { cursor: default; }
-.fn-finder-crumb .fn-icon { width: 15px; height: 15px; }
+.fn-finder-crumb .fn-icon { width: calc(15px + var(--fn-wide) * 2); height: calc(15px + var(--fn-wide) * 2); }
 button.fn-finder-crumb:hover { color: var(--text-primary); background: var(--bg-hover); }
 .fn-finder-crumb[aria-current] { color: var(--text-primary); font-weight: 600; }
-.fn-finder-search { position: relative; flex: 0 1 280px; gap: 0; }
+.fn-finder-search { position: relative; flex: 0 1 calc(280px + var(--fn-wide) * 80); gap: 0; }
 /* The magnifier and the clear button sit inside the field, as in Finder's own search box. */
 .fn-finder-search > .fn-icon { position: absolute; inset-inline-start: 10px; width: 15px; height: 15px; margin: 0; pointer-events: none; }
-.fn-finder-search .trek-input { min-height: 34px; padding-block: 6px; padding-inline: 32px 34px; }
+.fn-finder-search .trek-input { min-height: calc(34px + var(--fn-wide) * 6); padding-block: 6px; padding-inline: 32px 34px; }
 .fn-search-clear { width: 28px; min-width: 28px; height: 28px; }
 .fn-finder-search > .fn-search-clear { position: absolute; inset-inline-end: 2px; }
 .fn-new-folder { position: relative; flex: 0 0 auto; }
-.fn-finder-toolbar :is(.fn-refresh, .fn-new-note), .fn-new-folder > .fn-icon-button { width: 34px; min-width: 34px; height: 34px;
-  flex: 0 0 auto; }
+.fn-finder-toolbar :is(.fn-refresh, .fn-new-note, .fn-sort-button), .fn-new-folder > .fn-icon-button {
+  --fn-size: calc(34px + var(--fn-wide) * 6);
+  width: var(--fn-size); min-width: var(--fn-size); height: var(--fn-size); flex: 0 0 auto; }
 .fn-new-folder-popover { position: absolute; z-index: 15; inset-inline-end: 0; top: calc(100% + 6px); width: 286px; padding: 12px;
   border: 1px solid var(--border-primary); border-radius: 12px; background: var(--bg-card, var(--bg-primary));
   box-shadow: 0 14px 36px -6px color-mix(in oklch, var(--text-primary) 22%, transparent); transform-origin: top right;
   animation: fn-popover-in 180ms var(--trek-ease-quint); }
 [dir="rtl"] .fn-new-folder-popover { transform-origin: top left; }
 .fn-new-folder-popover .fn-folder-form { margin: 0; }
-.fn-finder { display: flex; height: clamp(420px, calc(100vh - 250px), 580px); overflow-x: auto; overscroll-behavior-x: contain; }
+/* The Finder card is the same size on the library and on a trip page in the same window, and a comfortable one, rather than
+   whatever space each frame happens to leave. TREK keeps part of the window for itself: above the plugin page 64px and above
+   a trip tab 108px on a desktop; on a phone nothing outside the plugin page (its dock floats over the frame) and 176px around a
+   trip tab. Adding that back gives the window's height, and the columns take that height less what the tighter of the two
+   pages needs above them and below (343px on a desktop, growing to 381px at 2560px wide; 451px on a phone). On a desktop they
+   are also no taller than 0.64 of the card's width, near the golden ratio, so a tall window leaves air below rather than a
+   long, empty well. These hold in a frame TREK fills ([data-fill]); a frame sized to its content (a dev preview) cannot be
+   measured this way, so the columns keep a height of their own there. */
+.fn-shell { --fn-host: 0px; --fn-keep: calc(343px + var(--fn-wide) * 38);
+  --fn-cap: calc(min(100vw - 48px, 1160px + var(--fn-wide) * 480) * .64); }
+[data-surface="plugin-page"] .fn-shell { --fn-host: 64px; }
+[data-surface="trip-tab"] .fn-shell { --fn-host: 108px; }
+[data-form-factor="phone"] .fn-shell { --fn-host: 0px; --fn-keep: 451px; --fn-cap: 100vh; }
+[data-form-factor="phone"][data-surface="trip-tab"] .fn-shell { --fn-host: 176px; }
+/* The page is the frame's height and never scrolls: should the header grow past what the sum allows, the card gives way
+   rather than push the page down; only the columns inside scroll. */
+[data-fill] .fn-shell[data-view="library"] { display: flex; flex-direction: column; height: 100vh; }
+[data-fill] .fn-shell[data-view="library"] > * { flex-shrink: 0; }
+/* Centred by its margins, the switcher would shrink to its text in a column; it keeps its full width instead. */
+[data-fill] .fn-shell[data-view="library"] > .fn-scope-switcher { box-sizing: border-box; width: 100%; }
+[data-fill] .fn-shell[data-view="library"] > .fn-finder-card { display: flex; flex: 0 1 auto; flex-direction: column; min-height: 0; }
+[data-fill] .fn-shell[data-view="library"] > .fn-finder-card > .fn-finder { flex: 0 1 auto; min-height: 0;
+  height: max(0px, min(calc(100vh + var(--fn-host) - var(--fn-keep)), var(--fn-cap))); }
+.fn-finder { display: flex; height: calc(580px + var(--fn-wide) * 300); overflow-x: auto;
+  overscroll-behavior-x: contain; }
 /* Switching library swaps the whole view at once, sliding in from the side the scope switcher moved toward. */
 .fn-finder-card[data-motion="forward"] > .fn-finder { animation: fn-content-in-forward 200ms var(--trek-ease-quint); }
 .fn-finder-card[data-motion="backward"] > .fn-finder { animation: fn-content-in-backward 200ms var(--trek-ease-quint); }
 [dir="rtl"] .fn-finder-card[data-motion="forward"] > .fn-finder { animation-name: fn-content-in-backward; }
 [dir="rtl"] .fn-finder-card[data-motion="backward"] > .fn-finder { animation-name: fn-content-in-forward; }
 @media (prefers-reduced-motion: reduce) { .fn-finder-card > .fn-finder { animation: fn-content-fade 150ms ease !important; } }
-.fn-finder-column { display: flex; flex: 0 0 236px; flex-direction: column; gap: 1px; box-sizing: border-box; padding: 6px;
+.fn-finder-column { display: flex; flex: 0 0 calc(236px + var(--fn-wide) * 64); flex-direction: column; gap: 1px; box-sizing: border-box;
+  padding: calc(6px + var(--fn-wide) * 2);
   overflow-y: auto; border-inline-end: 1px solid var(--border-primary); }
 .fn-finder-column.is-drop-target { background: color-mix(in oklch, var(--accent) 6%, transparent); }
 .fn-finder-item { position: relative; }
-.fn-finder-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 30px; box-sizing: border-box; padding: 4px 8px;
-  border: 0; border-radius: 7px; color: var(--text-primary); background: transparent; font: inherit; font-size: 13px; text-align: start;
+.fn-finder-row { display: flex; align-items: center; gap: calc(8px + var(--fn-wide) * 2); width: 100%;
+  min-height: calc(30px + var(--fn-wide) * 8);
+  box-sizing: border-box; padding: 4px calc(8px + var(--fn-wide) * 2); border: 0; border-radius: 7px; color: var(--text-primary);
+  background: transparent; font: inherit; font-size: calc(13px + var(--fn-wide) * 2.5); text-align: start;
   cursor: pointer; user-select: none; -webkit-user-select: none;
   /* iOS would otherwise answer a held row with its own text callout. */
   -webkit-touch-callout: none; }
-.fn-finder-row .fn-icon, .fn-finder-row img.fn-note-icon { width: 16px; height: 16px; color: var(--text-secondary); }
-.fn-finder-row .fn-note-icon:not(img), .fn-finder-glyph { display: inline-grid; place-items: center; width: 16px; font-size: 14px;
+.fn-finder-row .fn-icon, .fn-finder-row img.fn-note-icon { width: calc(16px + var(--fn-wide) * 3); height: calc(16px + var(--fn-wide) * 3);
+  color: var(--text-secondary); }
+.fn-finder-row .fn-note-icon:not(img), .fn-finder-glyph { display: inline-grid; place-items: center; width: calc(16px + var(--fn-wide) * 3);
+  font-size: calc(14px + var(--fn-wide) * 3);
   line-height: 1; }
-.fn-finder-row > .fn-icon:last-child:not(:first-child) { width: 12px; height: 12px; margin-inline-start: auto; color: var(--text-faint); }
+.fn-finder-row > .fn-icon:last-child:not(:first-child) { width: calc(12px + var(--fn-wide) * 2);
+  height: calc(12px + var(--fn-wide) * 2); margin-inline-start: auto; color: var(--text-faint); }
 .fn-finder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fn-finder-row:hover { background: var(--bg-hover); }
 .fn-finder-row:focus-visible { outline: 2px solid color-mix(in oklch, var(--accent) 55%, transparent); outline-offset: -2px; }
@@ -752,21 +803,29 @@ button.fn-finder-crumb:hover { color: var(--text-primary); background: var(--bg-
 .fn-context-menu [aria-checked="false"] .fn-icon { visibility: hidden; }
 /* Recently deleted sits at the foot of the first column, set apart by a hairline, as the Trash ends Finder's sidebar. */
 .fn-finder-bin { margin-top: auto; padding-top: 6px; border-top: 1px solid var(--border-primary); }
-.fn-finder-empty { margin: auto; padding: 16px; color: var(--text-muted); font-size: 12px; line-height: 1.5; text-align: center;
-  text-wrap: balance; }
-.fn-finder-preview { flex: 1 0 340px; min-width: 340px; box-sizing: border-box; padding: 22px 26px; overflow-y: auto; }
-.fn-preview { display: grid; gap: 10px; align-content: start; justify-items: start; animation: fn-content-in 200ms var(--trek-ease-quint); }
-.fn-preview h2 { margin: 0; font-size: 21px; line-height: 1.25; text-wrap: balance; }
-.fn-preview-meta { margin: 0; font-size: 12px; }
+.fn-finder-empty { margin: auto; padding: 16px; color: var(--text-muted); font-size: calc(12px + var(--fn-wide) * 1.5); line-height: 1.5;
+  text-align: center; text-wrap: balance; }
+.fn-finder-preview { --fn-size: calc(340px + var(--fn-wide) * 100); flex: 1 0 var(--fn-size); min-width: var(--fn-size);
+  box-sizing: border-box;
+  padding: calc(22px + var(--fn-wide) * 6) calc(26px + var(--fn-wide) * 8); overflow-y: auto; }
+/* A note previewed in a wide window keeps a reading measure rather than running the width of the column. */
+.fn-preview { display: grid; gap: 10px; align-content: start; justify-items: start; max-width: calc(680px + var(--fn-wide) * 160);
+  animation: fn-content-in 200ms var(--trek-ease-quint); }
+.fn-preview h2 { margin: 0; font-size: calc(21px + var(--fn-wide) * 4); line-height: 1.25; text-wrap: balance; }
+.fn-preview-meta { margin: 0; font-size: calc(12px + var(--fn-wide) * 1.5); }
 .fn-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .fn-preview-actions .trek-btn { display: inline-flex; align-items: center; gap: 6px; }
 .fn-preview .fn-props { width: 100%; }
 .fn-preview-body { width: 100%; padding-top: 6px; border-top: 1px solid var(--border-primary); }
-.fn-preview-body .fn-markdown { min-height: 0; padding-top: 8px; font-size: 13.5px; }
-.fn-preview-folder-glyph { display: grid; place-items: center; width: 64px; height: 64px; font-size: 44px; line-height: 1; }
-.fn-preview-folder-glyph .fn-icon { width: 52px; height: 52px; color: var(--text-secondary); stroke-width: 1.2; }
-.fn-preview-empty { height: 100%; align-content: center; justify-items: center; text-align: center; }
-.fn-preview-empty p { margin: 0; font-size: 13px; }
+.fn-preview-body .fn-markdown { min-height: 0; padding-top: 8px; font-size: calc(13.5px + var(--fn-wide) * 2.5); }
+.fn-preview-folder-glyph { display: grid; place-items: center; width: calc(64px + var(--fn-wide) * 10);
+  height: calc(64px + var(--fn-wide) * 10);
+  font-size: calc(44px + var(--fn-wide) * 8); line-height: 1; }
+.fn-preview-folder-glyph .fn-icon { width: calc(52px + var(--fn-wide) * 8); height: calc(52px + var(--fn-wide) * 8);
+  color: var(--text-secondary); stroke-width: 1.2; }
+/* The empty state is no text to read, so it takes the whole column and sits in its middle, both ways. */
+.fn-preview-empty { height: 100%; max-width: none; align-content: center; justify-items: center; text-align: center; }
+.fn-preview-empty p { margin: 0; font-size: calc(13px + var(--fn-wide) * 2); }
 @media (prefers-reduced-motion: reduce) { .fn-preview { animation: none; } }
 
 /* Note page: the trip page's comment panel, mirrored. The note keeps the page's width and centre, and the note browser opens in
@@ -863,7 +922,7 @@ button.fn-finder-crumb:hover { color: var(--text-primary); background: var(--bg-
   font: inherit; font-size: 26px; font-weight: 700; line-height: 1.25; outline: none; }
 .fn-title-input::placeholder { color: var(--text-faint); }
 /* Above the phone rule that sets fields to 16px against iOS zoom; 26px is large enough not to trigger it. */
-.fn-shell .fn-title-input { font-size: 26px; }
+.fn-shell .fn-title-input { font-size: var(--fn-title); }
 .fn-writer .fn-editor-canvas, .fn-writer .fn-editor-canvas:focus-within { border-color: transparent; background: transparent;
   box-shadow: none; }
 .fn-writer .fn-editor-canvas .cm-content { padding: 6px 0 24px; }
@@ -951,6 +1010,8 @@ button.fn-finder-crumb:hover { color: var(--text-primary); background: var(--bg-
   .fn-modal, .fn-share-modal { width: 100%; max-height: 90vh; border-width: 1px 0 0; border-radius: 18px 18px 0 0;
     padding-bottom: env(safe-area-inset-bottom); animation: fn-sheet-in 300ms var(--trek-ease-quint); }
   .fn-presence[data-leaving] .fn-modal { animation: fn-sheet-out 200ms ease-in forwards; }
+  .fn-confirm { padding-bottom: calc(22px + env(safe-area-inset-bottom)); }
+  .fn-confirm-actions > .trek-btn { flex: 1; min-height: 44px; }
 }
 @media (max-width: 700px) and (prefers-reduced-motion: reduce) {
   .fn-modal { animation: none; }
@@ -982,7 +1043,7 @@ button.fn-finder-crumb:hover { color: var(--text-primary); background: var(--bg-
 .fn-history-when { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 12px; white-space: nowrap; text-overflow: ellipsis;
   font-variant-numeric: tabular-nums; }
 .fn-history-back { display: none; }
-.fn-history-title { margin: 6px 0 14px; font-size: 26px; font-weight: 700; line-height: 1.25; text-wrap: balance; }
+.fn-history-title { margin: 6px 0 14px; font-size: var(--fn-title); font-weight: 700; line-height: 1.25; text-wrap: balance; }
 .fn-history-reader > .fn-markdown { animation: fn-content-in 200ms var(--trek-ease-quint); }
 .fn-history-failure { margin: 0; padding: 16px 22px 22px; color: var(--danger); font-size: 13px; }
 @media (prefers-reduced-motion: reduce) {

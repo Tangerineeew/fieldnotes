@@ -10286,6 +10286,42 @@ var require_service = __commonJS({
       return folderCache.folders;
     }
     var writeFolders = (ctx, sql, ...args2) => ctx.db.tx([{ sql, args: args2 }, FOLDERS_CHANGED]);
+    async function libraryWrites(ctx, userId, { folderId = null, noteId = null, parentId = null }, visibility, tree = null) {
+      const folders = tree || await folderTree(ctx);
+      const inside = [];
+      for (const queue = folderId ? [folderId] : [], seen = new Set(queue); queue.length; ) {
+        const current = queue.shift();
+        inside.push(current);
+        for (const folder of folders.values()) {
+          if (folder.parent_id === current && !seen.has(folder.id)) {
+            seen.add(folder.id);
+            queue.push(folder.id);
+          }
+        }
+      }
+      const above = [];
+      for (let current = visibility === "public" && parentId ? folders.get(parentId) : null, steps = 0; current && steps < 64; steps += 1) {
+        if (current.visibility !== "public") {
+          if (current.owner_id !== userId) fail(403, "A folder above it is private, and only its owner can make it public.");
+          above.push(current.id);
+        }
+        current = current.parent_id ? folders.get(current.parent_id) : null;
+      }
+      const folderIds = [...inside.filter((item) => folders.get(item)?.owner_id === userId), ...above];
+      return [
+        ...folderIds.length ? [{
+          sql: "UPDATE folders SET visibility = ?, updated_at = ? WHERE id IN (SELECT value FROM json_each(?))",
+          args: [visibility, (/* @__PURE__ */ new Date()).toISOString(), JSON.stringify(folderIds)]
+        }, FOLDERS_CHANGED] : [],
+        ...noteId || inside.length ? [{ sql: `UPDATE notes SET visibility = ? WHERE owner_id = ? AND archived = 0
+      AND (id = ? OR folder_id IN (SELECT value FROM json_each(?)))`, args: [visibility, userId, noteId, JSON.stringify(inside)] }] : []
+      ];
+    }
+    var inPublicLibrary = (userId, folderId, tree) => !folderId || Boolean(folderAccessFromRows(userId, folderId, tree, /* @__PURE__ */ new Map())?.publicPath);
+    async function movedWrites(ctx, userId, targetId, moved) {
+      const tree = await folderTree(ctx);
+      return inPublicLibrary(userId, targetId, tree) ? [] : libraryWrites(ctx, userId, moved, "private", tree);
+    }
     async function listAccessData(ctx, userId, includeNoteCollaborators = true, folders = null) {
       const [tree, folderCollaboratorRows, noteCollaboratorRows] = await Promise.all([
         folders || folderTree(ctx),
@@ -10550,15 +10586,23 @@ var require_service = __commonJS({
         if (duplicate.length) fail(409, "A folder with this name already exists here.");
         const folderId2 = randomUUID();
         const now2 = (/* @__PURE__ */ new Date()).toISOString();
-        await writeFolders(ctx, `INSERT INTO folders (id, owner_id, parent_id, name, icon, visibility, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, folderId2, userId, parentId, name, folderIcon(input.icon), input.visibility || "private", now2, now2);
+        const visibility = input.visibility || "private";
+        await ctx.db.tx([
+          ...visibility === "public" ? await libraryWrites(ctx, userId, { parentId }, visibility) : [],
+          { sql: `INSERT INTO folders (id, owner_id, parent_id, name, icon, visibility, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, args: [folderId2, userId, parentId, name, folderIcon(input.icon), visibility, now2, now2] },
+          FOLDERS_CHANGED
+        ]);
         return listed(folderId2);
       }
       if (input.action === "move_note") {
         const noteId = id2(input.note_id);
         if ((await editable(ctx, userId, noteId)).owner_id !== userId) fail(403, "Only the owner can move a note.");
         const target = await folderForWrite(ctx, userId, input.folder_id);
-        await ctx.db.exec("UPDATE notes SET folder_id = ?, updated_at = ? WHERE id = ?", target?.id || null, (/* @__PURE__ */ new Date()).toISOString(), noteId);
+        await ctx.db.tx([{
+          sql: "UPDATE notes SET folder_id = ?, updated_at = ? WHERE id = ?",
+          args: [target?.id || null, (/* @__PURE__ */ new Date()).toISOString(), noteId]
+        }, ...await movedWrites(ctx, userId, target?.id, { noteId })]);
         return readable(ctx, userId, noteId);
       }
       const folderId = id2(input.folder_id);
@@ -10569,12 +10613,16 @@ var require_service = __commonJS({
         const parentId = input.parent_id ? id2(input.parent_id) : null;
         if (parentId) await folderForWrite(ctx, userId, parentId);
         await checkReparent(ctx, "folders", folder, parentId, parentId ? {} : { owner_id: userId });
-        await writeFolders(ctx, "UPDATE folders SET parent_id = ?, updated_at = ? WHERE id = ?", parentId, now, folderId);
+        await ctx.db.tx([
+          { sql: "UPDATE folders SET parent_id = ?, updated_at = ? WHERE id = ?", args: [parentId, now, folderId] },
+          FOLDERS_CHANGED,
+          ...await movedWrites(ctx, userId, parentId, { folderId })
+        ]);
         return listed(folderId);
       }
       if (input.action === "visibility") {
         if (!["private", "public"].includes(input.visibility)) fail(400, "Invalid folder visibility.");
-        await writeFolders(ctx, "UPDATE folders SET visibility = ?, updated_at = ? WHERE id = ?", input.visibility, now, folderId);
+        await ctx.db.tx(await libraryWrites(ctx, userId, { folderId, parentId: folder.parent_id }, input.visibility));
         return listed(folderId);
       }
       if (input.action === "icon") {
@@ -11431,7 +11479,7 @@ ${propertyText(note.properties)}`);
         } catch {
           continue;
         }
-        const listed = publicOnly ? row.visibility === "public" && rights.publicReadable : row.owner_id === userId || Boolean(rights.directRole) || rights.inheritedRole > 0;
+        const listed = publicOnly ? rights.publicReadable : !rights.publicReadable && (row.owner_id === userId || Boolean(rights.directRole) || rights.inheritedRole > 0);
         if (listed) visible.push(search ? { ...note, score: found.score, snippet: found.snippet } : note);
       }
       const collator = new Intl.Collator(locale, { numeric: true, sensitivity: "base" });
@@ -11486,14 +11534,23 @@ ${propertyText(note.properties)}`);
       if (!row) fail(404, "This note is no longer in Recently deleted.");
       return row;
     }
-    async function listDeleted(ctx, userId, noteId) {
+    function recoveryFolder(userId, row, access) {
+      const folder = row.folder_id ? folderAccessFromRows(userId, row.folder_id, access.folders, access.folderCollaborators) : null;
+      return folder && roleValue(folder.role) >= 2 ? row.folder_id : null;
+    }
+    async function listDeleted(ctx, userId, noteId, library) {
       if (noteId) {
         const row = await deletedNote(ctx, userId, noteId);
         return { ...decode(row), deleted_at: row.archived_at, purge_at: purgeAt(row.archived_at) };
       }
-      const rows = await ctx.db.query(`SELECT id, title, icon, archived_at FROM notes WHERE owner_id = ? AND archived = 1 AND archived_at >= ?
-    ORDER BY archived_at DESC, id`, userId, deletedBefore());
-      return rows.map((row) => ({
+      if (library !== void 0 && !["private", "public"].includes(library)) fail(400, "Invalid library.");
+      const [rows, access] = await Promise.all([
+        ctx.db.query(`SELECT id, title, icon, archived_at, visibility, folder_id FROM notes
+    WHERE owner_id = ? AND archived = 1 AND archived_at >= ? ORDER BY archived_at DESC, id`, userId, deletedBefore()),
+        library ? listAccessData(ctx, userId, false) : null
+      ]);
+      const returnsPublic = (row) => row.visibility === "public" && inPublicLibrary(userId, recoveryFolder(userId, row, access), access.folders);
+      return rows.filter((row) => !library || returnsPublic(row) === (library === "public")).map((row) => ({
         id: row.id,
         title: row.title,
         icon: row.icon,
@@ -11504,11 +11561,12 @@ ${propertyText(note.properties)}`);
     async function deletedAction(ctx, userId, input) {
       const row = await deletedNote(ctx, userId, input.id);
       if (input.action === "recover") {
-        const folder = row.folder_id ? await folderAccess(ctx, userId, row.folder_id) : null;
-        const folderId = folder && roleValue(folder.role) >= 2 ? row.folder_id : null;
+        const access = await listAccessData(ctx, userId, false);
+        const folderId = recoveryFolder(userId, row, access);
+        const visibility = row.visibility === "public" && inPublicLibrary(userId, folderId, access.folders) ? "public" : "private";
         const { results } = await ctx.db.tx([
-          { sql: `UPDATE notes SET archived = 0, archived_at = NULL, folder_id = ?, version = version + 1
-        WHERE id = ? AND owner_id = ? AND archived = 1`, args: [folderId, row.id, userId] },
+          { sql: `UPDATE notes SET archived = 0, archived_at = NULL, folder_id = ?, visibility = ?, version = version + 1
+        WHERE id = ? AND owner_id = ? AND archived = 1`, args: [folderId, visibility, row.id, userId] },
           ...uploads.referenceOps("", row.content)
         ]);
         if (results[0].changes !== 1) fail(404, "This note is no longer in Recently deleted.");
@@ -11744,7 +11802,7 @@ ${propertyText(note.properties)}`);
       if (action === "note_settings") {
         const note = await owned(ctx, userId, body.id);
         if (!["private", "public"].includes(body.visibility)) fail(400, "Invalid visibility.");
-        await ctx.db.exec("UPDATE notes SET visibility = ? WHERE id = ?", body.visibility, note.id);
+        await ctx.db.tx(await libraryWrites(ctx, userId, { noteId: note.id, parentId: note.folder_id }, body.visibility));
         return owned(ctx, userId, note.id);
       }
       if (action === "trip_intent") return takeTripNoteIntent(ctx, userId);
@@ -11782,20 +11840,17 @@ ${propertyText(note.properties)}`);
           const folderId2 = body.folder_id === void 0 ? current.folder_id : body.folder_id || null;
           if (folderId2 !== current.folder_id && current.owner_id !== userId) fail(403, "Only the owner can move a note.");
           if (folderId2 && folderId2 !== current.folder_id) await folderForWrite(ctx, userId, folderId2);
-          return replaceNote(ctx, userId, current, body.version, {
-            title,
-            content,
-            tags,
-            properties,
-            icon,
-            visibility: body.visibility || current.visibility,
-            folderId: folderId2
-          });
+          const opens = body.visibility === "public" && current.visibility !== "public";
+          const leaves = !opens && folderId2 !== current.folder_id && !inPublicLibrary(userId, folderId2, await folderTree(ctx));
+          const visibility2 = leaves ? "private" : body.visibility || current.visibility;
+          if (opens) await ctx.db.tx(await libraryWrites(ctx, userId, { parentId: folderId2 }, visibility2));
+          return replaceNote(ctx, userId, current, body.version, { title, content, tags, properties, icon, visibility: visibility2, folderId: folderId2 });
         }
         const noteId = randomUUID();
         const visibility = body.visibility || "private";
         const folderId = body.folder_id || null;
         if (folderId) await folderForWrite(ctx, userId, folderId);
+        if (visibility === "public" && folderId) await ctx.db.tx(await libraryWrites(ctx, userId, { parentId: folderId }, visibility));
         await ctx.db.exec(
           `INSERT INTO notes (id, owner_id, title, content, tags, properties, icon, visibility, folder_id, created_at,
       updated_at, burst_at, edited_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json_array(?))`,
@@ -11816,7 +11871,7 @@ ${propertyText(note.properties)}`);
         await uploads.track(ctx, "", content);
         return owned(ctx, userId, noteId);
       }
-      if (action === "deleted") return listDeleted(ctx, userId, query.id);
+      if (action === "deleted") return listDeleted(ctx, userId, query.id, query.library);
       if (action === "deleted_action") return deletedAction(ctx, userId, body);
       if (action === "archive") {
         const current = await owned(ctx, userId, body.id);

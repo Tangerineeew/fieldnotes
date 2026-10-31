@@ -54,11 +54,14 @@ export async function run(page, lang, only = null) {
     await open(page, t.preview); await wait(1000);
     await shot(page, name('trip-list'), { height: 760 });
   }
-  if (go('comments')) {
-    await setup(page, { locale: lang, trip: true, width: 1400, height: 1300 });
+  // The covers stack the dark theme behind the light one, so these two are taken in both.
+  for (const theme of ['light', 'dark']) {
+    const shotName = theme === 'light' ? 'comments' : 'comments-dark';
+    if (!go(shotName)) continue;
+    await setup(page, { theme, locale: lang, trip: true, width: 1400, height: 1300 });
     await open(page, t.around); await twice(page, t.main);
     await button(page, t.comments); await wait(1500);
-    await shot(page, name('comments'), { height: 1000 });
+    await shot(page, name(shotName), { height: 1000 });
   }
   if (go('cards')) {
     await setup(page, { locale: lang, trip: true, width: 1100, height: 1500 });
