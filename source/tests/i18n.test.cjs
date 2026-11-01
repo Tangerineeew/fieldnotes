@@ -7,7 +7,7 @@ const path = require('node:path');
 const ts = require('typescript');
 
 const root = path.resolve(__dirname, '..');
-const LOCALES = ['zh', 'zh-TW', 'de', 'es', 'fr', 'hu', 'nl', 'br', 'cs', 'pl', 'ru', 'it', 'ar',
+const LOCALES = ['zh', 'zh-TW', 'de', 'es', 'fr', 'hu', 'nl', 'br', 'cs', 'pl', 'ru', 'it', 'ar', 'he',
   'et', 'sk', 'tr', 'az', 'id', 'ja', 'ko', 'th', 'uk', 'gr', 'sv', 'vi', 'ca'];
 const placeholders = (text) => [...text.matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort();
 

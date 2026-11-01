@@ -141,7 +141,7 @@ function materializeReferences(source: string, references: ReferenceLinks, text:
     const link = references[note];
     if (link?.unavailable) {
       // Neither the stored title nor the id: the label was the linked note's title, which this reader may not see.
-      return isNoteId(note) ? `[🔒 ${linkText(text.unavailable)}](${UNAVAILABLE_LINK} "${text.hint.replace(/"/g, '\\"')}")` : match;
+      return isNoteId(note) ? `[${linkText(text.unavailable)}](${UNAVAILABLE_LINK} "${text.hint.replace(/"/g, '\\"')}")` : match;
     }
     if (link?.id) return `[${linkText(linkLabel(target, label, link.title))}](${noteHref(link.id, heading)})`;
     return isNoteId(note) ? '…' : match;
@@ -169,7 +169,7 @@ function embed(target: string, label: string | undefined, references: ReferenceL
   if (isTrekTarget(target)) return trekCardHtml(trekRef(target), label, trekOf(references, target));
   const { note, heading } = splitTarget(target); const link = note ? references[note] : undefined;
   if (link?.unavailable) {
-    return `<div class="fn-embed fn-embed--locked" title="${escapeHtml(text.hint)}">🔒 ${escapeHtml(text.unavailable)}</div>`;
+    return `<div class="fn-embed fn-embed--locked" title="${escapeHtml(text.hint)}">${escapeHtml(text.unavailable)}</div>`;
   }
   if (!link || link.content === undefined) return `<div class="fn-embed fn-embed--pending" aria-busy="true">…</div>`;
   const section = heading ? sectionOf(link.content, heading) : link.content;
@@ -221,12 +221,17 @@ function renderMarkdown(source: string, imageSources: ImageSources = {}, referen
   return restore(restore(restore(html, `<p>${marker(EMBED_MARK)}</p>`, frames), marker(PDF_MARK), pdfs), marker(CHIP_MARK), chips);
 }
 
+// A list or table takes one direction for all its items, so they share one alignment, as Apple's guidelines ask.
+const TEXT_BLOCKS = 'p:not(li > p), h1, h2, h3, h4, h5, h6, ul, ol, blockquote, table';
+
 // Mounts sanitized Markdown without innerHTML, so the rendered fragment never runs inline handlers.
 export function renderMarkdownInto(element: HTMLElement, source: string, imageSources: ImageSources = {}, references: ReferenceLinks = {},
   text?: LinkText) {
   const range = element.ownerDocument.createRange();
   range.selectNodeContents(element);
   element.replaceChildren(range.createContextualFragment(renderMarkdown(source, imageSources, references, text)));
+  // Each block takes the direction of its own first letter, so a Hebrew paragraph reads right to left in an English interface.
+  element.querySelectorAll<HTMLElement>(TEXT_BLOCKS).forEach((block) => { block.dir = 'auto'; });
   element.querySelectorAll<HTMLElement>('.fn-pdf-slot')
     .forEach((slot) => slot.replaceWith(pdfView(imageSources[slot.dataset.source!], slot.dataset.name!)));
   mountTrekChips(element, references);

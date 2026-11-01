@@ -24,23 +24,31 @@ function LiveStats({ session, locale, t }: { session: CollabSession; locale?: st
   return <WritingStats markdown={session.content.toString()} locale={locale} t={t} />;
 }
 
-// One floating line at the bottom centre: a lasting problem, else a slow action, else the latest message for 3s. It keeps its
-// last words while fading out, so the text never vanishes before the pill does.
-export function FloatingNotice({ message, working, trouble }: {
-  message: { text: string; at: number } | null; working: string; trouble: string;
-}) {
-  const [recent, setRecent] = useState('');
+// One floating line at the bottom centre: a lasting problem, else a slow action, else the latest message for 3s. A message that
+// offers an action (Undo) stays 8s and pauses while the pointer or focus is on it, so no one has to race it. It keeps its last
+// words while fading out, so the text never vanishes before the pill does.
+export type Notice = { text: string; at: number; action?: { label: string; run: () => void } };
+export function FloatingNotice({ message, working, trouble }: { message: Notice | null; working: string; trouble: string }) {
+  const [recent, setRecent] = useState<Notice | null>(null);
+  const [held, setHeld] = useState(false);
+  useEffect(() => { if (message) setRecent(message); }, [message]);
   useEffect(() => {
-    if (!message) return;
-    setRecent(message.text);
-    const timer = window.setTimeout(() => setRecent(''), 3000);
+    if (!recent || held) return;
+    const timer = window.setTimeout(() => setRecent(null), recent.action ? 8000 : 3000);
     return () => window.clearTimeout(timer);
-  }, [message]);
-  const text = trouble || working || recent;
-  const last = useRef('');
-  if (text) last.current = text;
-  return <div className={`fn-toast${trouble ? ' is-trouble' : ''}`} role="status" data-show={text || undefined}>
-    {text || last.current}</div>;
+  }, [recent, held]);
+  const shown: Pick<Notice, 'text' | 'action'> | null = trouble ? { text: trouble } : working ? { text: working } : recent;
+  const last = useRef<Pick<Notice, 'text' | 'action'>>({ text: '' });
+  if (shown) last.current = shown;
+  const { text, action } = shown || last.current;
+  const hold = { onPointerEnter: () => setHeld(true), onPointerLeave: () => setHeld(false),
+    onFocus: () => setHeld(true), onBlur: () => setHeld(false) };
+  return <div className={`fn-toast${trouble ? ' is-trouble' : ''}`} role={trouble ? 'alert' : 'status'} data-show={shown ? true : undefined}
+    data-action={action && shown ? true : undefined} {...hold}>
+    <span>{text}</span>
+    {action && <button type="button" className="fn-toast-action" tabIndex={shown ? 0 : -1}
+      onClick={() => { setRecent(null); setHeld(false); action.run(); }}>{action.label}</button>}
+  </div>;
 }
 
 export function CollabEditor({ noteId, locale, invoke, t, renderEditor, sessionRef, onSaved, onTrouble, onDone, connecting }: Props) {
@@ -82,7 +90,7 @@ export function CollabEditor({ noteId, locale, invoke, t, renderEditor, sessionR
       <div className="trek-cluster"><button type="button" className="trek-btn trek-btn--primary"
         onClick={() => setAttempt((count) => count + 1)}>{t('Rejoin', '重新加入')}</button>
         <button type="button" className="trek-btn trek-btn--ghost"
-          onClick={() => void onDone()}>{t('Close editor', '关闭编辑器')}</button></div></div>;
+          onClick={() => void onDone()}>{t('Close Editor', '关闭编辑器')}</button></div></div>;
   }
   if (!session) return <div className="fn-collab-connecting" aria-busy="true">{connecting}
     <p className={connecting ? 'fn-visually-hidden' : 'trek-muted'} role="status">{t('Connecting…', '连接中…')}</p></div>;

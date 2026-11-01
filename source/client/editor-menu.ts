@@ -2,6 +2,7 @@ import { Prec, type Extension } from '@codemirror/state';
 import { EditorView, ViewPlugin, keymap, type ViewUpdate } from '@codemirror/view';
 import { TREK_ICONS } from './trek-objects';
 import { ICON_PATHS, iconElement } from './icons';
+import { hangFrom } from './media';
 
 
 export type MenuItem = { label: string; description?: string; hint?: string; icon: string;
@@ -35,6 +36,8 @@ const ICONS: Record<string, string> = {
   pdf: 'M7 3.5h7.5L18 7v13.5H7z M14.5 3.5V7H18 M10.5 17.5v-6h2a1.8 1.8 0 0 1 0 3.6h-2',
   ...TREK_ICONS,
 };
+// The ones that draw lines of text mirror in RTL, as the text they stand for does.
+const TEXT_ICONS = new Set(['bullet', 'quote', 'embed', 'callout', 'note']);
 const actionable = (item: MenuItem) => Boolean(item.run) && !item.disabled;
 // Ranks like Notion: title prefix, then a title word prefix, then a keyword prefix; plain substrings never match.
 function rank(item: MenuItem, query: string) {
@@ -56,7 +59,7 @@ function icon(doc: Document, item: MenuItem) {
     glyph.dataset.glyph = item.icon; glyph.textContent = item.icon;
     return glyph;
   }
-  return iconElement(doc, path, 'fn-editor-menu-svg');
+  return iconElement(doc, path, 'fn-editor-menu-svg', TEXT_ICONS.has(item.icon));
 }
 
 // Wraps the first case-insensitive match of `query` in <mark> so filtering shows why a row matched.
@@ -156,8 +159,9 @@ class MenuView {
     // The slash menu prefers opening below the caret, shrinking to fit, and flips only when little room is left below.
     // A context menu instead slides up as a whole, like native menus, so every item stays visible.
     const { width, height } = this.element.getBoundingClientRect(); const win = doc.defaultView!;
+    const { left, side } = hangFrom({ left: x, right: x }, width, win);
+    this.element.style.left = `${left}px`;
     if (kind === 'context') {
-      this.element.style.left = `${Math.max(8, Math.min(x, win.innerWidth - width - 8))}px`;
       this.element.style.top = `${Math.max(8, Math.min(y, win.innerHeight - height - 8))}px`;
       return;
     }
@@ -165,10 +169,9 @@ class MenuView {
     const expected = kind === 'link' ? Math.max(height, 320) : height;
     const below = win.innerHeight - y - 8; const flip = expected > below && below < 220 && above - 14 > below;
     this.element.style.maxHeight = `${Math.min(expected, flip ? above - 14 : Math.max(below, 120))}px`;
-    this.element.style.left = `${Math.max(8, Math.min(x, win.innerWidth - width - 8))}px`;
     // A flipped menu hangs from just above the caret, so it stays attached however tall its results grow.
     if (flip) this.element.style.bottom = `${win.innerHeight - above + 6}px`; else this.element.style.top = `${y}px`;
-    this.element.style.transformOrigin = flip ? 'bottom left' : 'top left';
+    this.element.style.transformOrigin = `${flip ? 'bottom' : 'top'} ${side}`;
     this.view.contentDOM.setAttribute('aria-controls', this.element.id); this.view.contentDOM.setAttribute('aria-expanded', 'true');
   }
 

@@ -33,7 +33,7 @@ function OutlineItems({ headings, onJump }: { headings: Heading[]; onJump: (head
   const top = Math.min(...headings.map((heading) => heading.level));
   return <>{headings.map((heading, index) => <button key={index} type="button" className="fn-outline-item"
     style={{ paddingInlineStart: 10 + Math.min(heading.level - top, 3) * 14 }}
-    data-level={heading.level - top} onClick={() => onJump(heading.text)}>{heading.text}</button>)}</>;
+    data-level={heading.level - top} onClick={() => onJump(heading.text)}><bdi>{heading.text}</bdi></button>)}</>;
 }
 
 // The outline docked beside a trip note, above its comments: it stays open while the reader moves through the note. It stays mounted

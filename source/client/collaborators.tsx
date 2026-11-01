@@ -50,7 +50,7 @@ export function CollaboratorEditor({ state, busy, t, onSave }: {
       const value = state.drafts[String(person.id)] ?? state.current(person.id);
       return <li key={person.id} className={value === 'none' ? 'is-none' : undefined}>
         <Avatar name={personName(person)} color={person.color} />
-        <span>{personName(person)}</span>
+        <span><bdi>{personName(person)}</bdi></span>
         {/* TREK's kit moves the <select> into a wrapper, so it gets a parent of its own. */}
         <div><select className="trek-select" aria-label={t('Access for {name}', '{name}的权限', { name: personName(person) })} value={value}
           onChange={(event) => state.setDrafts((drafts) => ({ ...drafts, [String(person.id)]: event.target.value as Choice }))}>
@@ -64,7 +64,7 @@ export function CollaboratorEditor({ state, busy, t, onSave }: {
       <span className="trek-muted">{pending ? t('Unsaved changes: {count}', '{count} 项未保存更改', { count: pending })
         : t('Only people who share a trip with you are listed.', '仅列出与你同行的成员。')}</span>
       <button type="button" className="trek-btn trek-btn--secondary" disabled={busy || !pending}
-        onClick={onSave}>{t('Save changes', '保存更改')}</button>
+        onClick={onSave}>{t('Save Changes', '保存更改')}</button>
     </div>
   </>;
 }

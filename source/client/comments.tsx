@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { Translate } from './i18n';
 import { Avatar, personName, type Person } from './collaborators';
 import { Icon, type IconName } from './icons';
+import { isNarrow, isRtl } from './media';
+import { useSheetDrag } from './sheet';
 import { maxCommentChars, maxQuoteChars, quoteContextChars } from '../shared/limits.json';
 
 
@@ -105,7 +107,7 @@ export function threadAt(ranges: Map<string, Range>, x: number, y: number) {
 export function QuoteButton({ article, label, onQuote }: {
   article: React.RefObject<HTMLElement | null>; label: string; onQuote: (anchor: Anchor) => void
 }) {
-  const [place, setPlace] = useState<{ top: number; left: number; anchor: Anchor } | null>(null);
+  const [place, setPlace] = useState<{ top: number; start: number; anchor: Anchor } | null>(null);
   useEffect(() => {
     const update = () => {
       const root = article.current; const selection = root?.ownerDocument.getSelection();
@@ -114,13 +116,15 @@ export function QuoteButton({ article, label, onQuote }: {
       const host = root?.parentElement;
       if (!root || !range || !anchor || !host) { setPlace(null); return; }
       const box = range.getBoundingClientRect(); const frame = host.getBoundingClientRect();
-      setPlace({ top: box.bottom - frame.top + 6, left: Math.max(0, box.left - frame.left), anchor });
+      // It sits under the selection's start edge: its left one, or its right one in RTL.
+      setPlace({ top: box.bottom - frame.top + 6, start: Math.max(0, isRtl() ? frame.right - box.right : box.left - frame.left), anchor });
     };
     document.addEventListener('selectionchange', update);
     return () => document.removeEventListener('selectionchange', update);
   }, [article]);
   if (!place) return null;
-  return <button type="button" className="trek-btn trek-btn--secondary fn-quote-button" style={{ top: place.top, left: place.left }}
+  return <button type="button" className="trek-btn trek-btn--secondary fn-quote-button"
+    style={{ top: place.top, insetInlineStart: place.start }}
     onMouseDown={(event) => event.preventDefault()}
     onClick={() => { onQuote(place.anchor); document.getSelection()?.removeAllRanges(); setPlace(null); }}>{label}</button>;
 }
@@ -134,7 +138,7 @@ function Composer({ placeholder, submitLabel, initial = '', autoFocus, busy, onS
   useEffect(() => { if (autoFocus) field.current?.focus(); }, [autoFocus]);
   const submit = async () => { if (body.trim() && await onSubmit(body.trim())) setBody(''); };
   return <form className="fn-comment-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-    <textarea ref={field} className="trek-textarea" rows={2} maxLength={maxCommentChars} placeholder={placeholder}
+    <textarea ref={field} className="trek-textarea" dir="auto" rows={2} maxLength={maxCommentChars} placeholder={placeholder}
       aria-label={placeholder}
       value={body} onChange={(event) => setBody(event.target.value)} onKeyDown={(event) => {
         if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submit(); }
@@ -169,7 +173,7 @@ function CommentItem({ comment, userId, canModerate, busy, locale, actions, t }:
     <div className="fn-comment-meta">
       <Avatar className="fn-comment-avatar" name={comment.author ? personName(comment.author) : `#${comment.author_id}`}
         color={comment.author?.color} />
-      <strong>{comment.author ? personName(comment.author) : `#${comment.author_id}`}</strong>
+      <strong><bdi>{comment.author ? personName(comment.author) : `#${comment.author_id}`}</bdi></strong>
       <time className="trek-muted" dateTime={comment.created_at}>{when}</time>
       {comment.updated_at !== comment.created_at && <span className="trek-muted">{t('Edited', '已编辑')}</span>}
       {!editing && (own || canModerate) && <span className="fn-comment-tools">
@@ -178,10 +182,10 @@ function CommentItem({ comment, userId, canModerate, busy, locale, actions, t }:
       </span>}
     </div>
     {editing
-      ? <Composer initial={comment.body} placeholder={t('Edit comment', '编辑评论')} submitLabel={t('Save', '保存')} autoFocus busy={busy} t={t}
+      ? <Composer initial={comment.body} placeholder={t('Edit Comment', '编辑评论')} submitLabel={t('Save', '保存')} autoFocus busy={busy} t={t}
         onCancel={() => setEditing(false)}
         onSubmit={async (body) => { const saved = await actions.edit(comment.id, body); if (saved) setEditing(false); return saved; }} />
-      : <p className="fn-comment-body">{comment.body}</p>}
+      : <p className="fn-comment-body" dir="auto">{comment.body}</p>}
   </li>;
 }
 
@@ -211,12 +215,14 @@ export function CommentPanel({ open, threads, located, pending, activeId, userId
     panel.current?.querySelector(`[data-thread="${reveal}"]`)?.scrollIntoView({ block: 'nearest' });
     setReveal(null);
   }, [reveal]);
+  // As a sheet on a narrow screen it is pulled down to close, as the note browser is.
+  useSheetDrag(panel, open && isNarrow(), onClose);
   // Stays mounted while closed so it can animate out; `inert` keeps it out of focus and the accessibility tree meanwhile.
   return <aside ref={panel} className="fn-comment-panel" aria-labelledby="comments-heading" data-open={open || undefined} inert={!open}>
     <div className="fn-comment-panel-header">
       <h3 id="comments-heading">{t('Comments', '评论')}</h3>
-      <button type="button" className="trek-btn trek-btn--ghost fn-icon-button" aria-label={t('Close comments', '关闭评论')}
-        title={t('Close comments', '关闭评论')} onClick={onClose}><Icon name="close" /></button>
+      <button type="button" className="trek-btn trek-btn--ghost fn-icon-button" aria-label={t('Close Comments', '关闭评论')}
+        title={t('Close Comments', '关闭评论')} onClick={onClose}><Icon name="close" /></button>
     </div>
     <div className="trek-segmented fn-comment-tabs" role="group" aria-label={t('Comment status', '评论状态')}>
       <button type="button" aria-pressed={!showResolved} onClick={() => setShowResolved(false)}>
@@ -227,9 +233,9 @@ export function CommentPanel({ open, threads, located, pending, activeId, userId
       </button>
     </div>
     {!showResolved && <div className="fn-comment-new">
-      {pending && <blockquote className="fn-comment-quote">
+      {pending && <blockquote className="fn-comment-quote" dir="auto">
         <span>{pending.quote}</span>
-        <button type="button" className="fn-text-button" onClick={onDropQuote}>{t('Remove quote', '不引用')}</button>
+        <button type="button" className="fn-text-button" onClick={onDropQuote}>{t('Remove Quote', '不引用')}</button>
       </blockquote>}
       <Composer key={pending ? `quote:${pending.quote}` : 'note'} autoFocus={Boolean(pending)} busy={busy} t={t}
         placeholder={pending ? t('Comment on the selected text…', '评论选中的文字…') : t('Comment on this note…', '评论这篇笔记…')}
@@ -239,7 +245,7 @@ export function CommentPanel({ open, threads, located, pending, activeId, userId
       className={`fn-comment-thread${root.id === activeId ? ' is-active' : ''}${root.resolved_at ? ' is-resolved' : ''}`}
       onClick={(event) => { if (!(event.target as HTMLElement).closest('button, textarea, a')) onActivate(root.id); }}>
       <div className="fn-comment-thread-head">
-        {root.quote ? <blockquote className="fn-comment-quote">
+        {root.quote ? <blockquote className="fn-comment-quote" dir="auto">
           <span>{root.quote}</span>
           {!root.resolved_at && !located.has(root.id)
             && <small className="trek-muted">{t('The quoted text has changed.', '引用的文字已被修改。')}</small>}

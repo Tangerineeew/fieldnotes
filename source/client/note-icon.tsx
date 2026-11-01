@@ -58,7 +58,7 @@ export function IconPicker({ icon, onChange, t }: { icon: string | null; onChang
     <button ref={trigger} type="button" className={`fn-icon-picker-trigger${icon ? ' has-icon' : ''}`}
       aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
       {icon ? <NoteIcon icon={icon} className="fn-note-icon--large" />
-        : <span className="fn-icon-picker-placeholder">{t('+ Add icon', '+ 添加图标')}</span>}
+        : <span className="fn-icon-picker-placeholder">{t('+ Add Icon', '+ 添加图标')}</span>}
     </button>
     {open && <div className="fn-icon-picker-panel" role="dialog" aria-label={t('Note icon', '笔记图标')}>
       <div className="fn-icon-picker-grid">{SUGGESTED.map((emoji) =>
@@ -75,7 +75,7 @@ export function IconPicker({ icon, onChange, t }: { icon: string | null; onChang
       </form>
       <div className="trek-cluster fn-icon-picker-actions">
         <button type="button" className="trek-btn trek-btn--ghost"
-          onClick={() => file.current?.click()}>{t('Upload image', '上传图片')}</button>
+          onClick={() => file.current?.click()}>{t('Upload Image', '上传图片')}</button>
         {icon && <button type="button" className="trek-btn trek-btn--ghost" onClick={() => choose(null)}>{t('Remove', '移除')}</button>}
       </div>
       <input ref={file} type="file" accept="image/png,image/jpeg,image/webp,image/gif"

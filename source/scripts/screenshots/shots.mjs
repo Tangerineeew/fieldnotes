@@ -9,14 +9,14 @@ import { setup, shot, wait, frameBox } from './lib.mjs';
 const T = {
   en: { country: 'China', region: 'Yunnan', main: 'Getting around Yunnan', day: 'Day 1: Kunming', around: 'Getting around',
     plans: 'Daily plans', prep: 'Before you go', esim: 'eSIM and Wi-Fi', edit: 'Edit', sharing: 'Sharing', comments: 'Comments',
-    bin: 'Recently deleted', old: 'Lijiang hostels (old list)', preview: 'Jade Dragon Snow Mountain', properties: 'Properties' },
+    bin: 'Recently Deleted', old: 'Lijiang hostels (old list)', preview: 'Jade Dragon Snow Mountain', properties: 'Properties' },
   zh: { country: '中国', region: '云南', main: '云南交通速查', day: '第一天：昆明', around: '交通', plans: '每日计划', prep: '行前准备',
     esim: 'eSIM 与 Wi-Fi', edit: '编辑', sharing: '共享', comments: '评论', bin: '最近删除', old: '丽江青旅（旧清单）',
     preview: '玉龙雪山', properties: '属性' },
 };
 
 // Finder rows by their exact name, so a folder never matches a note that starts with its name.
-const row = (label) => `css=.fn-finder-column .fn-finder-name:text-is("${label}")`;
+const row = (label) => `css=.fn-finder-column .fn-finder-name > bdi:text-is("${label}")`;
 const open = async (page, label) => { await page.click(row(label)); await wait(500); };
 const twice = async (page, label) => { await open(page, label); await page.click(row(label)); await wait(1800); };
 const button = (page, name) => page.click(`loc=role:button[name="${name}"]`);
@@ -54,11 +54,14 @@ export async function run(page, lang, only = null) {
     await open(page, t.preview); await wait(1000);
     await shot(page, name('trip-list'), { height: 760 });
   }
-  if (go('comments')) {
-    await setup(page, { locale: lang, trip: true, width: 1400, height: 1300 });
+  // The covers stack the dark theme behind the light one, so these two are taken in both.
+  for (const theme of ['light', 'dark']) {
+    const shotName = theme === 'light' ? 'comments' : 'comments-dark';
+    if (!go(shotName)) continue;
+    await setup(page, { theme, locale: lang, trip: true, width: 1400, height: 1300 });
     await open(page, t.around); await twice(page, t.main);
     await button(page, t.comments); await wait(1500);
-    await shot(page, name('comments'), { height: 1000 });
+    await shot(page, name(shotName), { height: 1000 });
   }
   if (go('cards')) {
     await setup(page, { locale: lang, trip: true, width: 1100, height: 1500 });

@@ -25,9 +25,10 @@ export const selectedOf = (property: Property) =>
   (property.type === 'select' ? [property.value] : Array.isArray(property.value) ? property.value : []) as string[];
 
 function TypeIcon({ type }: { type: PropertyType }) {
-  if (type === 'text') return <span className="fn-prop-glyph" aria-hidden="true">Aa</span>;
-  if (type === 'number') return <span className="fn-prop-glyph" aria-hidden="true">123</span>;
+  // Line icons only: letters in an icon would need translating and fall below the smallest readable size.
   const paths: Record<string, React.ReactNode> = {
+    text: <path d="M5 7h14M5 12h14M5 17h9" />,
+    number: <path d="M10 4.5 8 19.5M16 4.5l-2 15M5 9.5h14.5M4.5 14.5H19" />,
     date: <><rect x="4" y="5.5" width="16" height="14" rx="2" /><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4" /></>,
     select: <><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none" /></>,
     multi_select: <><path d="M9 7h11M9 12h11M9 17h11" /><circle cx="4.8" cy="7" r=".9" />
@@ -43,7 +44,7 @@ function TypeIcon({ type }: { type: PropertyType }) {
 }
 
 function Chip({ option }: { option: PropertyOption }) {
-  return <span className={`fn-prop-chip fn-prop-color-${option.color % propertyColors}`}>{option.name}</span>;
+  return <span className={`fn-prop-chip fn-prop-color-${option.color % propertyColors}`}><bdi>{option.name}</bdi></span>;
 }
 
 function Progress({ items }: { items: ChecklistItem[] }) {
@@ -116,11 +117,12 @@ function OptionPicker({ property, onChange, t }: { property: Property; onChange:
   return <div className="fn-prop-options">
     {options.map((option) => <span key={option.id} className={`fn-prop-option${selected.includes(option.id) ? ' is-selected' : ''}`}>
       <button type="button" className={`fn-prop-chip fn-prop-color-${option.color % propertyColors}`}
-        aria-pressed={selected.includes(option.id)} onClick={() => onChange({ ...property, value: choose(option.id) })}>{option.name}</button>
-      <RemoveButton className="fn-prop-option-remove" label={t('Remove option {name}', '删除选项{name}', { name: option.name })}
+        aria-pressed={selected.includes(option.id)} onClick={() => onChange({ ...property, value: choose(option.id) })}>
+        <bdi>{option.name}</bdi></button>
+      <RemoveButton className="fn-prop-option-remove" label={t('Remove Option {name}', '删除选项{name}', { name: option.name })}
         onClick={() => remove(option.id)} />
     </span>)}
-    <input className="trek-input fn-prop-option-input" maxLength={maxPropertyNameChars} value={draft}
+    <input className="trek-input fn-prop-option-input" dir="auto" maxLength={maxPropertyNameChars} value={draft}
       placeholder={t('Type an option, then press Enter', '输入选项，按回车添加')}
       onChange={(event) => setDraft(event.target.value)}
       onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); add(); } }} onBlur={add} />
@@ -135,13 +137,13 @@ function ChecklistEditor({ property, onChange, t }: { property: Property; onChan
     {items.map((item, index) => <div className="fn-prop-checklist-row" key={index}>
       <input type="checkbox" checked={item.done} aria-label={item.text}
         onChange={(event) => set(items.map((entry, i) => i === index ? { ...entry, done: event.target.checked } : entry))} />
-      <input className="trek-input" maxLength={200} value={item.text}
+      <input className="trek-input" dir="auto" maxLength={200} value={item.text}
         onChange={(event) => set(items.map((entry, i) => i === index ? { ...entry, text: event.target.value } : entry))} />
-      <RemoveButton className="fn-prop-option-remove" label={t('Remove item', '删除项目')}
+      <RemoveButton className="fn-prop-option-remove" label={t('Remove Item', '删除项目')}
         onClick={() => set(items.filter((_entry, i) => i !== index))} />
     </div>)}
     <button type="button" className="trek-btn trek-btn--ghost fn-prop-add-item" disabled={items.length >= 50}
-      onClick={() => set([...items, { text: '', done: false }])}>{t('+ Add item', '+ 添加项目')}</button>
+      onClick={() => set([...items, { text: '', done: false }])}>{t('+ Add Item', '+ 添加项目')}</button>
   </div>;
 }
 
@@ -149,15 +151,16 @@ function ValueEditor({ property, onChange, t }: { property: Property; onChange: 
   const set = (value: unknown) => onChange({ ...property, value });
   const label = { 'aria-label': property.name };
   switch (property.type) {
-    case 'text': return <input className="trek-input" maxLength={maxPropertyTextChars} value={String(property.value ?? '')}
+    case 'text': return <input className="trek-input" dir="auto" maxLength={maxPropertyTextChars} value={String(property.value ?? '')}
       onChange={(event) => set(event.target.value)} {...label} />;
-    case 'number': return <input className="trek-input" type="number" value={typeof property.value === 'number' ? property.value : ''}
+    case 'number': return <input className="trek-input" type="number" inputMode="decimal"
+      value={typeof property.value === 'number' ? property.value : ''}
       onChange={(event) => set(event.target.value === '' ? null : Number(event.target.value))} {...label} />;
     case 'date': return <input className="trek-input" type="date" value={String(property.value ?? '')}
       onChange={(event) => set(event.target.value || null)} {...label} />;
     case 'checkbox': return <input type="checkbox" className="fn-prop-check" checked={property.value === true}
       onChange={(event) => set(event.target.checked)} {...label} />;
-    case 'url': return <input className="trek-input" type="url" maxLength={maxPropertyTextChars} placeholder="https://"
+    case 'url': return <input className="trek-input" type="url" dir="ltr" maxLength={maxPropertyTextChars} placeholder="https://"
       value={String(property.value ?? '')} onChange={(event) => set(event.target.value)} {...label} />;
     case 'select': case 'multi_select': return <OptionPicker property={property} onChange={onChange} t={t} />;
     case 'checklist': return <ChecklistEditor property={property} onChange={onChange} t={t} />;
@@ -185,7 +188,7 @@ function PropertyEditor({ properties, onChange, t }: { properties: Property[]; o
   return <div className="fn-prop-editor">
     {properties.map((property, index) => <div className="fn-prop-edit-row" key={property.id}>
       <span className="fn-prop-edit-type" title={typeLabel(property.type, t)}><TypeIcon type={property.type} /></span>
-      <input className="trek-input fn-prop-name" maxLength={maxPropertyNameChars} value={property.name}
+      <input className="trek-input fn-prop-name" dir="auto" maxLength={maxPropertyNameChars} value={property.name}
         aria-label={t('Property name', '属性名称')}
         onChange={(event) => replace(index, { ...property, name: event.target.value })} />
       <div className="fn-prop-value"><ValueEditor property={property} onChange={(next) => replace(index, next)} t={t} /></div>
@@ -194,7 +197,7 @@ function PropertyEditor({ properties, onChange, t }: { properties: Property[]; o
     </div>)}
     <div className="fn-prop-add" ref={menu}>
       <button ref={trigger} type="button" className="trek-btn trek-btn--ghost" aria-haspopup="menu" aria-expanded={menuOpen}
-        disabled={properties.length >= 30} onClick={() => setMenuOpen((open) => !open)}>{t('+ Add property', '+ 添加属性')}</button>
+        disabled={properties.length >= 30} onClick={() => setMenuOpen((open) => !open)}>{t('+ Add Property', '+ 添加属性')}</button>
       {menuOpen && <div className="fn-folder-menu fn-prop-menu" role="menu" onKeyDown={onMenuKey}>{TYPES.map((type) =>
         <button key={type} type="button" role="menuitem" onClick={() => add(type)}>
         <TypeIcon type={type} />{typeLabel(type, t)}</button>)}</div>}

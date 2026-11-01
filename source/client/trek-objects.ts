@@ -1,6 +1,6 @@
 import type { Translate } from './i18n';
 import type { ReferenceLinks } from './markdown';
-import { isPhone } from './media';
+import { hangFrom, isPhone } from './media';
 
 
 // A snapshot shows its trip's places, bookings, days and stays: `[[trek:place/12|Name]]` in running text is a small tag that
@@ -130,7 +130,9 @@ export function cardLines(card: TrekObject): { name: string; facts: string; deta
 }
 
 export const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
-const span = (className: string, text: string | null | undefined) => (text ? `<span class="${className}">${escapeHtml(text)}</span>` : '');
+// Each value sits in its own <bdi>, so a Hebrew place name keeps its punctuation in an English card and the reverse.
+const span = (className: string, text: string | null | undefined) =>
+  (text ? `<span class="${className}"><bdi>${escapeHtml(text)}</bdi></span>` : '');
 // Line icons on the 24px grid the rest of Fieldnotes draws with.
 export const TREK_ICONS: Record<TrekKind | 'flight' | 'train' | 'map', string> = {
   place: 'M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z M12 7.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5',
@@ -238,7 +240,7 @@ export function trekChipHtml(ref: string, label: string | undefined, card: TrekO
   return `<span class="fn-trek-chip${card === null ? ' fn-trek-chip--missing' : ''}" data-trek="${TREK_PREFIX}${escapeHtml(ref)}"`
     + ` data-label="${escapeHtml(label?.trim() || '')}" role="button" tabindex="0"${card === null
       ? ` title="${escapeHtml(t('Removed from this trip', '已从这次旅行中移除'))}"` : ''}>`
-    + `<span class="fn-trek-chip-icon">${icon}</span>${escapeHtml(name)}</span>`;
+    + `<span class="fn-trek-chip-icon">${icon}</span><bdi>${escapeHtml(name)}</bdi></span>`;
 }
 
 // The TREK page a card opens, from `fieldnotes://trek/trips/…`; anything else is not a card's link.
@@ -265,9 +267,10 @@ function showCard(chip: HTMLElement, references: ReferenceLinks, pinned: boolean
   if (!isPhone()) {
     const box = chip.getBoundingClientRect(); const { width, height } = element.getBoundingClientRect();
     const below = box.bottom + 6 + height <= win.innerHeight - 8 || box.top - 6 - height < 8;
-    element.style.left = `${Math.max(8, Math.min(box.left, win.innerWidth - width - 8))}px`;
+    const { left, side } = hangFrom(box, width, win);
+    element.style.left = `${left}px`;
     element.style.top = `${below ? box.bottom + 6 : box.top - 6 - height}px`;
-    element.style.transformOrigin = below ? 'top left' : 'bottom left';
+    element.style.transformOrigin = `${below ? 'top' : 'bottom'} ${side}`;
   } else element.classList.add('fn-trek-pop--sheet');
   const follow = (event: MouseEvent) => {
     const anchor = (event.target as HTMLElement).closest('a');

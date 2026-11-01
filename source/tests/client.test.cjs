@@ -17,6 +17,13 @@ before(async () => {
   bundle = result.outputFiles.find((file) => file.path.endsWith('app.js')).text;
 });
 
+// Text as read: the first-strong isolates translations put around inserted names are invisible.
+const visible = (text) => text.replace(/[\u2068\u2069]/g, '');
+
+// The control a row labels with an inserted name, matched by the label as read.
+const removal = (row, trip) => [...row.querySelectorAll('[aria-label]')]
+  .find((item) => visible(item.getAttribute('aria-label')) === `Remove from ${trip}`);
+
 async function until(check) {
   const end = Date.now() + 3000;
   while (Date.now() < end) { if (check()) return; await new Promise((resolve) => setTimeout(resolve, 10)); }
@@ -93,10 +100,19 @@ async function ui(t, options = {}) {
         notes: [{ ...current, mode: 'live' }] };
       return { ok: true };
     },
-    async confirm(input) { confirmations.push(input); return options.confirm !== false; },
     navigate(to) { calls.push({ navigate: to }); },
     openExternal(url) { calls.push({ external: url }); },
   };
+  // The page asks in its own window: keep what it asked, and answer as `options.confirm` says.
+  new window.MutationObserver(() => {
+    const dialog = doc.querySelector('.fn-confirm:not([data-answered])');
+    if (!dialog || dialog.closest('[inert]') || options.confirm === 'manual') return;
+    dialog.setAttribute('data-answered', '');
+    const [cancel, accept] = dialog.querySelectorAll('button');
+    confirmations.push({ message: dialog.querySelector('.fn-confirm-message').textContent, confirmLabel: accept.textContent,
+      danger: accept.classList.contains('trek-btn--danger') });
+    setTimeout(() => (options.confirm === false ? cancel : accept).click());
+  }).observe(doc.body, { childList: true, subtree: true });
   window.eval(bundle);
   await until(() => calls.some((call) => call.sub.startsWith('/notes') || call.sub.startsWith('/public')
     || call.sub === '/trip' && call.body?.action === 'list'));
@@ -137,7 +153,7 @@ async function ui(t, options = {}) {
     await until(() => doc.querySelector('.fn-context-menu'));
     return [...doc.querySelectorAll('.fn-context-menu [role^="menuitem"]')];
   }
-  // New notes start from the library's context menu, whose first item is "New note" in every language.
+  // New notes start from the library's context menu, whose first item is "New Note" in every language.
   async function newNote() {
     (await menu(doc.querySelector('.fn-finder-column')))[0].click(); await until(() => doc.querySelector('#title'));
   }
@@ -162,7 +178,7 @@ test('a new note started in a folder or from the toolbar leaves without asking u
   const folder = { id: '22222222-2222-2222-2222-222222222222', owner_id: 1, parent_id: null, name: 'Japan', visibility: 'private',
     role: 'editor', public_path: false, can_manage: true };
   const app = await ui(t, { invoke: (sub) => sub === '/folders' ? [folder] : undefined });
-  (await app.menu('Japan')).find((item) => item.textContent === 'New note').click();
+  (await app.menu('Japan')).find((item) => item.textContent === 'New Note').click();
   await until(() => app.doc.querySelector('#title'));
   app.doc.querySelector('.fn-reader-back').click(); await until(() => app.doc.querySelector('.fn-finder-card'));
   app.doc.querySelector('.fn-finder-toolbar .fn-new-note').click(); await until(() => app.doc.querySelector('#title'));
@@ -181,23 +197,78 @@ test('Finder rows and empty space have their own context menus', async (t) => {
   assert.equal(app.doc.querySelector('.fn-folder-menu-button'), null);
   const labels = (items) => items.map((item) => item.textContent.trim());
 
-  assert.deepEqual(labels(await app.menu('Japan')), ['Open', 'New note', 'New folder', 'Permissions', 'Delete']);
+  assert.deepEqual(labels(await app.menu('Japan')), ['Open', 'New Note', 'New Folder', 'Move to…', 'Permissions', 'Delete']);
   assert.ok(app.doc.querySelector('.fn-finder-row.is-context')?.textContent.includes('Japan'));
   assert.equal(app.doc.activeElement, app.doc.querySelector('.fn-context-menu [role="menuitem"]'));
   app.doc.querySelector('.fn-context-menu').dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await until(() => !app.doc.querySelector('.fn-context-menu'));
 
-  assert.deepEqual(labels(await app.menu('Kyoto')), ['Open', 'Copy as Markdown', 'Edit', 'Sharing', 'Delete note']);
+  assert.deepEqual(labels(await app.menu('Kyoto')), ['Open', 'Copy as Markdown', 'Edit', 'Sharing', 'Move to…', 'Delete Note']);
   await until(() => app.doc.querySelector('.fn-preview h2')?.textContent === 'Kyoto');
   app.doc.body.dispatchEvent(new app.window.Event('pointerdown', { bubbles: true }));
   await until(() => !app.doc.querySelector('.fn-context-menu'));
 
   const blank = await app.menu(column(app, 0));
-  assert.deepEqual(labels(blank), ['New note', 'New folder', 'Import Markdown or ZIP…', 'Import a folder…', 'Name', 'Date modified',
-    'Date created']);
-  assert.deepEqual(blank.filter((item) => item.getAttribute('aria-checked') === 'true').map((item) => item.textContent), ['Date modified']);
-  blank.find((item) => item.textContent.includes('New folder')).click();
+  assert.deepEqual(labels(blank), ['New Note', 'New Folder', 'Import Markdown or ZIP…', 'Import a Folder…', 'Name', 'Date Modified',
+    'Date Created']);
+  assert.deepEqual(blank.filter((item) => item.getAttribute('aria-checked') === 'true').map((item) => item.textContent), ['Date Modified']);
+  blank.find((item) => item.textContent.includes('New Folder')).click();
   await until(() => app.doc.querySelector('.fn-new-folder-popover #new-folder-name'));
+});
+
+test('a long path folds its middle into “…”, whose menu goes to the folders it hides, and search ends the toolbar', async (t) => {
+  const names = ['Asia', 'Japan', 'Kansai', 'Kyoto'];
+  const folders = names.map((name, at) => ({ id: `2222222${at}-2222-2222-2222-222222222222`, owner_id: 1, name, visibility: 'private',
+    parent_id: at ? `2222222${at - 1}-2222-2222-2222-222222222222` : null, role: 'editor', public_path: false, can_manage: true }));
+  const app = await ui(t, { invoke: (sub) => sub === '/folders' ? folders : undefined });
+  const folderRow = (name) => [...app.doc.querySelectorAll('.fn-finder-row[data-kind="folder"]')].find((row) => row.textContent === name);
+  for (const name of names) { await until(() => folderRow(name)); folderRow(name).click(); }
+  await until(() => app.doc.querySelector('.fn-finder-crumb--more'));
+  const crumbs = () => [...app.doc.querySelectorAll('.fn-finder-path .fn-finder-crumb')].map((crumb) => crumb.textContent);
+  assert.deepEqual(crumbs(), ['All Notes', '…', 'Kansai', 'Kyoto']);
+  app.doc.querySelector('.fn-finder-crumb--more').click();
+  await until(() => app.doc.querySelector('.fn-context-menu'));
+  const items = [...app.doc.querySelectorAll('.fn-context-menu [role="menuitem"]')];
+  assert.deepEqual(items.map((item) => item.textContent), ['Asia', 'Japan']);
+  items[1].click();
+  await until(() => crumbs().join() === ['All Notes', 'Asia', 'Japan'].join());
+  assert.equal(app.doc.querySelector('.fn-finder-toolbar').lastElementChild.classList.contains('fn-finder-search'), true);
+});
+
+test('Move to… chooses a folder in a small Finder, offers Move Here only where the note can go, and moves it there', async (t) => {
+  const japan = { id: '22222222-2222-2222-2222-222222222222', owner_id: 1, parent_id: null, name: 'Japan', visibility: 'private',
+    role: 'editor', public_path: false, can_manage: true };
+  const shared = { ...japan, id: '33333333-3333-3333-3333-333333333333', name: 'Shared', role: 'viewer', can_manage: false };
+  const listed = { id: '11111111-1111-1111-1111-111111111111', owner_id: 1, title: 'Kyoto', content: 'Temples', version: 1,
+    updated_at: '2026-01-01T00:00:00Z' };
+  const app = await ui(t, { invoke: (sub) => sub === '/folders' ? [japan, shared] : sub.startsWith('/notes') ? { notes: [listed] }
+    : sub.startsWith('/note?') ? listed : undefined });
+  (await app.menu('Kyoto')).find((item) => item.textContent === 'Move to…').click();
+  await until(() => app.doc.querySelector('.fn-folder-picker'));
+  assert.equal(visible(app.doc.querySelector('#move-title').textContent), 'Move “Kyoto”');
+  const moveHere = () => [...app.doc.querySelectorAll('.fn-folder-picker button')].find((button) => button.textContent === 'Move Here');
+  assert.equal(moveHere().disabled, true);
+  [...app.doc.querySelectorAll('.fn-folder-picker .fn-finder-row')].find((row) => row.textContent.includes('Japan')).click();
+  await until(() => moveHere()?.disabled === false);
+  moveHere().click();
+  await until(() => app.calls.some((call) => call.sub === '/folder' && call.body.action === 'move_note'));
+  assert.equal(app.calls.find((call) => call.body?.action === 'move_note').body.folder_id, japan.id);
+});
+
+test('Command-click chooses several notes; their menu deletes them together and one Undo brings them all back', async (t) => {
+  const notes = ['Kyoto', 'Osaka', 'Nara'].map((title, at) => ({ id: `1111111${at}-1111-1111-1111-111111111111`, owner_id: 1, title,
+    content: title, version: 1, updated_at: '2026-01-01T00:00:00Z' }));
+  const app = await ui(t, { invoke: (sub) => sub.startsWith('/notes') ? { notes } : undefined });
+  const row = (title) => [...app.doc.querySelectorAll('.fn-finder-row')].find((item) => item.textContent.includes(title));
+  row('Kyoto').click(); await until(() => row('Kyoto').getAttribute('aria-current'));
+  row('Nara').dispatchEvent(new app.window.MouseEvent('click', { bubbles: true, metaKey: true }));
+  await until(() => app.doc.querySelectorAll('.fn-finder-row.is-selected').length === 2);
+  assert.equal(visible(app.doc.querySelector('.fn-preview-selection h2').textContent), '2 Items');
+  (await app.menu('Nara')).find((item) => item.textContent.startsWith('Delete')).click();
+  await until(() => app.calls.filter((call) => call.sub === '/archive').length === 2);
+  await until(() => app.doc.querySelector('.fn-toast-action'));
+  app.doc.querySelector('.fn-toast-action').click();
+  await until(() => app.calls.filter((call) => call.sub === '/deleted' && call.body.action === 'recover').length === 2);
 });
 
 test('a finger held on a Finder row opens its menu as a sheet and the tap that ends the press does nothing', async (t) => {
@@ -264,11 +335,33 @@ test('folders drag onto folders or the library root, never into their own subtre
   assert.deepEqual({ ...app.calls.find((call) => call.body?.action === 'move').body }, { action: 'move', folder_id: treeFolders[0].id,
     parent_id: treeFolders[1].id });
   await until(() => app.doc.querySelector('.fn-finder-card').getAttribute('aria-busy') === 'false');
+  // What moved stays chosen where it landed: the folder it went into opens.
+  await until(() => finderItem(app, '韩国').querySelector('.fn-finder-row').getAttribute('aria-current') === 'true');
+  finderItem(app, '日本').querySelector('.fn-finder-row').click(); await until(() => finderItem(app, '交通'));
   drag(app, 'dragstart', finderItem(app, '交通').querySelector('.fn-finder-row'));
   await until(() => finderItem(app, '交通').classList.contains('is-dragging'));
   const root = column(app, 0); drag(app, 'dragover', root); drag(app, 'drop', root);
   await until(() => app.calls.filter((call) => call.body?.action === 'move').length === 2);
   assert.equal(app.calls.filter((call) => call.body?.action === 'move')[1].body.parent_id, null);
+});
+
+test('the private library leaves out public folders, and a folder dragged onto the public tab moves there', async (t) => {
+  const shown = { id: '33333333-3333-3333-3333-333333333334', owner_id: 1, parent_id: null, name: 'Shown', visibility: 'public',
+    role: 'editor', public_path: true, can_manage: true };
+  const app = await ui(t, { invoke: (sub) => sub === '/folders' ? [...treeFolders, shown] : undefined });
+  await until(() => finderItem(app, '日本'));
+  assert.equal(finderItem(app, 'Shown'), undefined);
+  finderItem(app, '日本').querySelector('.fn-finder-row').click(); await until(() => finderItem(app, '交通'));
+  drag(app, 'dragstart', finderItem(app, '交通').querySelector('.fn-finder-row'));
+  await until(() => finderItem(app, '交通').classList.contains('is-dragging'));
+  const [privateTab, publicTab] = app.doc.querySelectorAll('[role="tab"]');
+  assert.equal(drag(app, 'dragover', privateTab).defaultPrevented, false);
+  assert.equal(drag(app, 'dragover', publicTab).defaultPrevented, true);
+  drag(app, 'drop', publicTab);
+  await until(() => app.calls.some((call) => call.body?.action === 'visibility'));
+  assert.match(visible(app.confirmations.at(-1).message), /The folders above it, 日本, become public too/);
+  assert.deepEqual({ ...app.calls.find((call) => call.body?.action === 'visibility').body },
+    { action: 'visibility', folder_id: treeFolders[2].id, visibility: 'public' });
 });
 
 test('sort menu requests the chosen order and remembers it', async (t) => {
@@ -322,7 +415,7 @@ test('an empty trip says how to add a note, and its toolbar opens the library', 
   const app = await ui(t, { trip: true, invoke: (sub, init) => sub === '/trip' && init?.body?.action === 'list'
     ? { trip: { id: 10, title: 'Japan trip' }, notes: [] } : undefined });
   assert.match(app.doc.querySelector('.fn-finder-empty').textContent, /Create a note here/);
-  app.doc.querySelector('.fn-finder-toolbar [aria-label="Open Fieldnotes library"]').click();
+  app.doc.querySelector('.fn-finder-toolbar [aria-label="Open Fieldnotes Library"]').click();
   assert.ok(app.calls.some((call) => call.navigate === '/plugins/fieldnotes'));
 });
 
@@ -336,7 +429,7 @@ test('Trip Fieldnotes starts a linked note in the trusted library editor', async
   } });
   [...app.doc.querySelectorAll('.fn-finder-row')].find((row) => row.textContent.includes('Transport')).click();
   await until(() => app.doc.querySelector('.fn-finder-crumb[aria-current]')?.textContent === 'Transport');
-  app.doc.querySelector('.fn-finder-toolbar [aria-label="New note for this trip"]').click();
+  app.doc.querySelector('.fn-finder-toolbar [aria-label="New Note for This Trip"]').click();
   await until(() => app.calls.some((call) => call.sub === '/trip' && call.body?.action === 'begin_note'));
   const request = app.calls.find((call) => call.sub === '/trip' && call.body?.action === 'begin_note');
   assert.equal(request.body.trip_folder_id, '22222222-2222-2222-2222-222222222222');
@@ -376,13 +469,13 @@ test('a note page keeps the note central with a small Finder beside it, shares i
   finderItem(app, 'Japan').querySelector('.fn-finder-row').click(); await app.open();
   const browser = app.doc.querySelector('.fn-note-browser');
   assert.equal(browser.hasAttribute('data-open'), true);
-  assert.deepEqual([...browser.querySelectorAll('.fn-finder-crumb')].map((crumb) => crumb.textContent), ['All notes', 'Japan']);
+  assert.deepEqual([...browser.querySelectorAll('.fn-finder-crumb')].map((crumb) => crumb.textContent), ['All Notes', 'Japan']);
   assert.equal(browser.querySelector('.fn-finder-row[aria-current="page"]').textContent, 'Japan tips');
-  browser.querySelector('[aria-label="Back to parent folder"]').click();
+  browser.querySelector('[aria-label="Back to Parent Folder"]').click();
   await until(() => names(browser.querySelector('.fn-mini-finder-list')).join() === 'Japan');
   browser.querySelector('.fn-finder-row[data-kind="folder"]').click();
   await until(() => browser.querySelector('.fn-finder-row[aria-current="page"]'));
-  app.doc.querySelector('[aria-label="Hide notes"]').click();
+  app.doc.querySelector('[aria-label="Hide Notes"]').click();
   await until(() => !browser.hasAttribute('data-open'));
   assert.equal(JSON.parse(app.window.localStorage.getItem('fieldnotes:drawers')).tree, false);
   app.doc.querySelector('.fn-reader-share').click();
@@ -429,7 +522,7 @@ test('people are given, changed or denied access from one list and saved in one 
     select.dispatchEvent(new app.window.Event('change', { bubbles: true })); };
   choose(rows[0], 'none'); choose(rows[1], 'viewer'); choose(rows[2], 'editor');
   await until(() => /Unsaved changes: 3/.test(app.doc.querySelector('.fn-share-modal .fn-collaborator-bulk-actions').textContent));
-  app.click('Save changes');
+  app.click('Save Changes');
   await until(() => app.calls.some((call) => call.sub === '/collaborator' && call.body?.action === 'bulk_roles'));
   const request = app.calls.find((call) => call.sub === '/collaborator' && call.body?.action === 'bulk_roles');
   assert.deepEqual(JSON.parse(JSON.stringify(request.body.changes)), [
@@ -444,10 +537,35 @@ test('collaborator roles can be staged and saved together', async (t) => {
   await until(() => app.doc.querySelector('.fn-collaborators select'));
   app.select('.fn-collaborators select', 'viewer');
   assert.equal(app.calls.some((call) => call.sub === '/collaborator' && call.body?.action === 'bulk_roles'), false);
-  app.click('Save changes');
+  app.click('Save Changes');
   await until(() => app.calls.some((call) => call.sub === '/collaborator' && call.body?.action === 'bulk_roles'));
   const request = app.calls.find((call) => call.sub === '/collaborator' && call.body?.action === 'bulk_roles');
   assert.equal(JSON.stringify(request.body.changes), JSON.stringify([{ user_id: 2, role: 'viewer' }]));
+});
+
+test('deleting a note asks nothing: it goes to Recently deleted, and Undo in the notice brings it back', async (t) => {
+  const app = await ui(t, { confirm: 'manual' }); await app.open();
+  app.click('Delete Note');
+  await until(() => app.calls.some((call) => call.sub === '/archive'));
+  assert.equal(app.doc.querySelector('.fn-confirm'), null);
+  await until(() => app.doc.querySelector('.fn-toast-action'));
+  assert.equal(visible(app.doc.querySelector('.fn-toast').textContent), 'Moved to Recently deleted.Undo');
+  app.doc.querySelector('.fn-toast-action').click();
+  await until(() => app.calls.some((call) => call.sub === '/deleted' && call.body.action === 'recover'));
+});
+
+test('a destructive confirmation asks in the plugin’s own window with no default button; Escape or ⌘. cancels it', async (t) => {
+  const folder = { id: '22222222-2222-2222-2222-222222222222', owner_id: 1, parent_id: null, name: 'Japan', visibility: 'private',
+    role: 'editor', public_path: false, can_manage: true };
+  const app = await ui(t, { confirm: 'manual', invoke: (sub) => sub === '/folders' ? [folder] : undefined });
+  (await app.menu('Japan')).find((item) => item.textContent === 'Delete').click();
+  await until(() => app.doc.querySelector('.fn-confirm'));
+  assert.equal(app.doc.querySelector('.fn-confirm').getAttribute('role'), 'alertdialog');
+  assert.equal(app.doc.querySelector('#fn-confirm-title').textContent, 'Delete Folder');
+  await until(() => app.doc.activeElement === app.doc.querySelector('.fn-confirm'));
+  app.doc.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: '.', metaKey: true, bubbles: true }));
+  await until(() => app.doc.querySelector('.fn-confirm')?.closest('[inert]') || !app.doc.querySelector('.fn-confirm'));
+  assert.equal(app.calls.some((call) => call.sub === '/folder' && call.body.action === 'archive'), false);
 });
 
 test('reference and snapshot share confirmations are explicit and UI sends their mode', async (t) => {
@@ -455,7 +573,7 @@ test('reference and snapshot share confirmations are explicit and UI sends their
   await until(() => app.doc.querySelector('#trip'));
   app.select('#trip', '10'); await until(() => app.doc.querySelectorAll('#day option').length === 2);
   await until(() => !app.doc.querySelector('fieldset').disabled);
-  app.select('#day', '101'); app.select('#mode', 'snapshot'); app.click('Add to trip');
+  app.select('#day', '101'); app.select('#mode', 'snapshot'); app.click('Add to Trip');
   await until(() => app.calls.some((call) => call.sub === '/link'));
   const call = app.calls.find((item) => item.sub === '/link');
   assert.equal(call.body.mode, 'snapshot'); assert.equal(call.body.trip_id, 10); assert.equal(call.body.day_id, '101');
@@ -465,7 +583,7 @@ test('reference and snapshot share confirmations are explicit and UI sends their
 test('canceling sharing never writes a link', async (t) => {
   const app = await ui(t, { confirm: false }); await app.open(); app.doc.querySelector('.fn-reader-share').click();
   await until(() => app.doc.querySelector('#trip')); app.select('#trip', '10');
-  await until(() => !app.doc.querySelector('fieldset').disabled); app.click('Add to trip');
+  await until(() => !app.doc.querySelector('fieldset').disabled); app.click('Add to Trip');
   await until(() => app.confirmations.length === 1);
   assert.equal(app.calls.filter((call) => call.sub === '/link').length, 0);
 });
@@ -505,11 +623,11 @@ const button = (app, label) => app.doc.querySelector(`[aria-label="${label}"]`);
 test('a trip note reads as a library note does, with the trip’s actions beside its title', async (t) => {
   const app = await tripUi(t);
   assert.ok(app.doc.querySelector('.fn-layout-reader'));
-  for (const label of ['Refresh', 'New note for this trip', 'Open Fieldnotes library']) assert.equal(button(app, label), null, label);
-  for (const label of ['Comments', 'Convert to snapshot', 'Remove from trip']) {
+  for (const label of ['Refresh', 'New Note for This Trip', 'Open Fieldnotes Library']) assert.equal(button(app, label), null, label);
+  for (const label of ['Comments', 'Convert to Snapshot', 'Remove from Trip']) {
     assert.ok(app.doc.querySelector(`.fn-note-actions [aria-label="${label}"]`), label);
   }
-  assert.equal(button(app, 'Edit snapshot'), null);
+  assert.equal(button(app, 'Edit Snapshot'), null);
   assert.equal(app.doc.body.textContent.includes('Copy excerpt'), false);
   assert.equal(app.doc.querySelector('.fn-reader-back').textContent, 'Japan trip');
   // The note browser and the comments open on either side of the note; without room for both, one gives way to the other.
@@ -551,22 +669,22 @@ test('on a trip, Finder menus offer what a trip editor can do with its notes and
     return undefined;
   } });
   const labels = (items) => items.map((item) => item.textContent.trim());
-  assert.deepEqual(labels(await app.menu('IC cards')), ['Open', 'Copy as Markdown', 'Convert to snapshot', 'Remove from trip']);
+  assert.deepEqual(labels(await app.menu('IC cards')), ['Open', 'Copy as Markdown', 'Convert to Snapshot', 'Move to…', 'Remove from Trip']);
   app.doc.querySelector('.fn-context-menu').dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  assert.deepEqual(labels(await app.menu('Reference unavailable')), ['Remove from trip']);
+  assert.deepEqual(labels(await app.menu('Reference unavailable')), ['Remove from Trip']);
   app.doc.querySelector('.fn-context-menu').dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  assert.deepEqual(labels(await app.menu('Transport')), ['Open', 'New note for this trip', 'New folder', 'Delete']);
+  assert.deepEqual(labels(await app.menu('Transport')), ['Open', 'New Note for This Trip', 'New Folder', 'Move to…', 'Delete']);
   app.doc.querySelector('.fn-context-menu').dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   assert.ok(labels(await app.menu(app.doc.querySelector('.fn-finder-column'))).every((label) => !label.startsWith('Import')));
 });
 
 test('a live reference becomes a snapshot only after confirmation', async (t) => {
   const app = await tripUi(t);
-  button(app, 'Convert to snapshot').click();
+  button(app, 'Convert to Snapshot').click();
   await until(() => app.calls.some((call) => call.body?.action === 'snapshot_convert'));
   assert.match(app.confirmations.at(-1).message, /keeps its own copy/);
-  await until(() => button(app, 'Edit snapshot'));
-  assert.equal(button(app, 'Convert to snapshot'), null);
+  await until(() => button(app, 'Edit Snapshot'));
+  assert.equal(button(app, 'Convert to Snapshot'), null);
 });
 
 test('trip editors edit a snapshot live, saving as they type, and read its versions through the trip', async (t) => {
@@ -577,8 +695,8 @@ test('trip editors edit a snapshot live, saving as they type, and read its versi
   const app = await tripUi(t, { mode: 'snapshot', version: 7 }, { snapshot_history: () => listing,
     snapshot_version: () => ({ id: 'v1', edited_at: '2026-09-20T08:00:00Z', title: 'Japan tips', icon: null, properties: [],
       content: 'IC cards.' }) });
-  assert.equal(button(app, 'Convert to snapshot'), null);
-  button(app, 'Edit snapshot').click(); await until(() => app.doc.querySelector('#content-editor .cm-content'));
+  assert.equal(button(app, 'Convert to Snapshot'), null);
+  button(app, 'Edit Snapshot').click(); await until(() => app.doc.querySelector('#content-editor .cm-content'));
   assert.equal(app.doc.querySelector('#visibility'), null);
   assert.equal([...app.doc.querySelectorAll('button')].some((item) => /Save/.test(item.textContent)), false);
   app.input('#title', 'IC cards for this trip');
@@ -587,8 +705,8 @@ test('trip editors edit a snapshot live, saving as they type, and read its versi
   assert.equal(synced().body.trip_id, 10); assert.equal(synced().body.note_id, '11111111-1111-1111-1111-111111111111');
   assert.equal(app.calls.some((call) => call.sub === '/collab' || call.body?.action === 'snapshot_save'), false);
   app.doc.querySelector('.fn-reader-back').click(); await until(() => app.doc.querySelector('.fn-finder-card'));
-  await app.open(); await until(() => button(app, 'Version history'));
-  button(app, 'Version history').click(); await until(() => app.doc.querySelector('.fn-history-modal'));
+  await app.open(); await until(() => button(app, 'Version History'));
+  button(app, 'Version History').click(); await until(() => app.doc.querySelector('.fn-history-modal'));
   await until(() => app.calls.some((call) => call.body?.action === 'snapshot_history'));
   assert.equal(app.calls.some((call) => call.sub.startsWith('/history')), false);
 });
@@ -597,7 +715,7 @@ test('a snapshot editor finds the trip’s PDFs in the slash menu; a library not
   const ticket = { source: 'fieldnotes://trip-file/10/6', name: 'Shinkansen ticket.pdf', size: 30 };
   const app = await tripUi(t, { mode: 'snapshot' }, { files: () => [ticket],
     file: (body) => body.source === ticket.source ? { source: ticket.source, data_url: PDF_URL } : undefined });
-  button(app, 'Edit snapshot').click(); await until(() => app.doc.querySelector('#content-editor .cm-content'));
+  button(app, 'Edit Snapshot').click(); await until(() => app.doc.querySelector('#content-editor .cm-content'));
   await until(() => app.calls.some((call) => call.body?.action === 'files'));
   const content = app.doc.querySelector('#content-editor .cm-content');
   const view = app.doc.querySelector('#content-editor').liveEditorView;
@@ -661,7 +779,7 @@ test('a snapshot shows its trip’s items as cards that open in the plan, and / 
   app.doc.querySelector('.fn-trek-pop .fn-trek-main').click();
   await until(() => !app.doc.querySelector('.fn-trek-pop'));
 
-  button(app, 'Edit snapshot').click(); await until(() => app.doc.querySelector('#content-editor .cm-content'));
+  button(app, 'Edit Snapshot').click(); await until(() => app.doc.querySelector('#content-editor .cm-content'));
   await until(() => app.calls.some((call) => call.body?.action === 'objects' && !call.body.refs));
   const editor = app.doc.querySelector('#content-editor .cm-content');
   const view = app.doc.querySelector('#content-editor').liveEditorView;
@@ -676,7 +794,7 @@ test('a snapshot shows its trip’s items as cards that open in the plan, and / 
   view.dispatch({ selection: { anchor: view.state.doc.length } });
   type('\n'); type('/'); await until(() => app.doc.querySelector('.fn-editor-menu'));
   type('trip');
-  await until(() => app.doc.querySelector('.fn-editor-menu .is-active .fn-editor-menu-title')?.textContent === 'Trip item');
+  await until(() => app.doc.querySelector('.fn-editor-menu .is-active .fn-editor-menu-title')?.textContent === 'Trip Item');
   enter(); await until(() => app.doc.querySelector('.fn-editor-menu--link .fn-editor-menu-section')?.textContent === 'From this trip');
   type('kix'); await until(() => app.doc.querySelector('.fn-editor-menu .is-active .fn-editor-menu-title')?.textContent === 'PVG → KIX');
   enter(); await until(() => view.state.doc.toString().endsWith('early.\n![[trek:booking/39|PVG → KIX]]'));
@@ -747,13 +865,26 @@ test('live editor renders Markdown but reveals and edits its syntax at the caret
   assert.equal(app.calls.some((call) => call.sub === '/save'), false);
 });
 
+test('each paragraph, list and editor line takes its own direction, while a title keeps the interface alignment', async (t) => {
+  const app = await ui(t, { note: { content: '# Bring an IC card\n\nשלום עולם.\n\n- one\n- two' } });
+  app.doc.querySelector('.fn-finder-row[data-kind="note"]').click();
+  await until(() => app.doc.querySelector('.fn-preview .fn-markdown h1'));
+  assert.equal(app.doc.querySelector('.fn-preview h2 > bdi').textContent, 'Japan tips');
+  const blocks = [...app.doc.querySelectorAll('.fn-preview .fn-markdown :is(h1, p, ul, li)')];
+  assert.deepEqual(blocks.map((block) => `${block.tagName}:${block.dir}`), ['H1:auto', 'P:auto', 'UL:auto', 'LI:', 'LI:']);
+  const { content } = await openEditor(app);
+  const lines = [...content.querySelectorAll('.cm-line')];
+  assert.ok(lines.length >= 5);
+  assert.equal(lines.every((line) => line.getAttribute('dir') === 'auto'), true);
+});
+
 test('notes gain typed properties that save with the note and render as a property panel', async (t) => {
   const app = await ui(t, { note: { properties: [{ id: 'fare', name: 'Fare', type: 'number', value: 170 }] } });
   await app.open(); await until(() => app.doc.querySelector('.fn-props'));
   assert.equal(app.doc.querySelector('.fn-prop-row dd').textContent, '170');
   assert.equal(app.doc.querySelector('.fn-workspace').textContent.includes('v1'), false);
   app.click('Edit'); await until(() => app.doc.querySelector('.fn-prop-editor'));
-  app.click('+ Add property'); await until(() => app.doc.querySelector('.fn-prop-menu'));
+  app.click('+ Add Property'); await until(() => app.doc.querySelector('.fn-prop-menu'));
   app.click('Select');
   await until(() => app.doc.querySelector('.fn-prop-option-input'));
   assert.equal(app.doc.querySelector('.fn-prop-option-input').placeholder, 'Type an option, then press Enter');
@@ -825,7 +956,7 @@ test('the preview reads a note the list sends without its text, and shows its ic
 test('an emoji icon chosen while co-editing reaches the note and heads its page', async (t) => {
   const app = await ui(t);
   await openEditor(app);
-  app.click('+ Add icon'); await until(() => app.doc.querySelector('.fn-icon-picker-panel'));
+  app.click('+ Add Icon'); await until(() => app.doc.querySelector('.fn-icon-picker-panel'));
   [...app.doc.querySelectorAll('.fn-icon-picker-grid button')].find((button) => button.textContent === '🗾').click();
   await until(() => app.note().icon === '🗾');
   app.doc.querySelector('.fn-note-browser .fn-finder-row[aria-current]').click();
@@ -897,7 +1028,7 @@ test('an id link shows the note’s current title, and neither title nor id when
   const article = app.doc.querySelector('.fn-markdown');
   assert.equal(article.querySelector('a[href^="fieldnotes://note/"]').textContent, 'Kyoto in autumn');
   const locked = article.querySelector('a[href="#fieldnotes-unavailable"]');
-  assert.equal(locked.textContent, '🔒 Note you can’t open');
+  assert.equal(locked.textContent, 'Note you can’t open');
   assert.equal(locked.getAttribute('title'), 'You don’t have access to this note, or it was deleted.');
   assert.doesNotMatch(article.textContent, /Secret plan/); assert.doesNotMatch(article.textContent, new RegExp(gone));
   const calls = app.calls.length; locked.click();
@@ -922,22 +1053,22 @@ test('linking a note some readers cannot open says who, and its owner can share 
     === 'Some readers can’t open it');
   content.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   await until(() => app.doc.querySelector('.fn-link-gap'));
-  const notice = app.doc.querySelector('.fn-link-gap').textContent;
+  const notice = visible(app.doc.querySelector('.fn-link-gap').textContent);
   assert.match(notice, /Not everyone who reads this note can open “Kyoto in autumn”/);
   assert.match(notice, /Readers: sherwin and mei/); assert.match(notice, /Trips: Taiwan/); assert.match(notice, /Other trips: 1/);
   assert.match(notice, /these readers need another way in: mei/);
-  app.click('Let them view…');
+  app.click('Let Them View…');
   await until(() => app.doc.querySelector('[role="dialog"][aria-labelledby="link-grant-title"]'));
   const dialog = app.doc.querySelector('[aria-labelledby="link-grant-title"]');
   assert.deepEqual([...dialog.querySelectorAll('.fn-grant-option')].map((row) => [row.querySelector('input').checked,
     row.children[1].textContent]), [[true, 'sherwin'], [true, 'Taiwan']]);
   dialog.querySelectorAll('.fn-grant-option input')[1].click();
-  app.click('Grant access');
+  app.click('Grant Access');
   await until(() => app.calls.some((call) => call.sub === '/link-grant'));
   assert.deepEqual(JSON.parse(JSON.stringify(app.calls.find((call) => call.sub === '/link-grant').body)),
     { note_id: '11111111-1111-1111-1111-111111111111', target_id: KYOTO, user_ids: [2], trip_ids: [] });
   await until(() => !app.doc.querySelector('.fn-link-gap') && !app.doc.querySelector('[aria-labelledby="link-grant-title"]'));
-  assert.equal(app.doc.querySelector('[role="status"]').textContent, 'Shared “Kyoto in autumn”.');
+  assert.equal(visible(app.doc.querySelector('[role="status"]').textContent), 'Shared “Kyoto in autumn”.');
 });
 
 test('someone who does not own the linked note is told who can share it, with nothing to press', async (t) => {
@@ -949,9 +1080,9 @@ test('someone who does not own the linked note is told who can share it, with no
   await openEditor(app);
   await until(() => app.doc.querySelector('.fn-link-gap'));
   const notice = app.doc.querySelector('.fn-link-gap');
-  assert.match(notice.textContent, /This note is public; “Kyoto in autumn” is not\./);
-  assert.match(notice.textContent, /Only the owner of “Kyoto in autumn” can share it\./);
-  assert.equal([...notice.querySelectorAll('button')].some((button) => button.textContent === 'Let them view…'), false);
+  assert.match(visible(notice.textContent), /This note is public; “Kyoto in autumn” is not\./);
+  assert.match(visible(notice.textContent), /Only the owner of “Kyoto in autumn” can share it\./);
+  assert.equal([...notice.querySelectorAll('button')].some((button) => button.textContent === 'Let Them View…'), false);
   notice.querySelector('[aria-label="Close"]').click();
   await until(() => !app.doc.querySelector('.fn-link-gap'));
 });
@@ -1093,7 +1224,7 @@ test('typing / opens a filterable block menu that rewrites the line from the key
   const labels = () => [...app.doc.querySelectorAll('.fn-editor-menu-title')].map((node) => node.textContent);
   assert.equal(labels()[0], 'Image');
   assert.deepEqual([...app.doc.querySelectorAll('.fn-editor-menu-section')].map((node) => node.textContent),
-    ['Media', 'Links', 'Basic blocks']);
+    ['Media', 'Links', 'Basic Blocks']);
   type('zz');
   await until(() => app.doc.querySelector('.fn-editor-menu-empty')?.textContent === 'No matching blocks');
   view.dispatch({ changes: { from: view.state.selection.main.head - 2, to: view.state.selection.main.head } });
@@ -1215,7 +1346,7 @@ test('server failures are shown in the reader language, with translated paramete
   app.input('#title', 'Entwurf');
   app.doc.querySelector('#title').closest('form').dispatchEvent(new app.window.Event('submit', { bubbles: true, cancelable: true }));
   await until(() => app.doc.querySelector('[role="alert"]'));
-  assert.equal(app.doc.querySelector('[role="alert"]').textContent, 'Ungültiger Wert: Titel.');
+  assert.equal(visible(app.doc.querySelector('[role="alert"]').textContent), 'Ungültiger Wert: Titel.');
 });
 
 test('host locale and theme context changes do not discard an in-progress draft', async (t) => {
@@ -1245,7 +1376,7 @@ test('the note page keeps the way back above the note, sharing beside edit, and 
   assert.ok(app.doc.querySelector('.fn-reader-column > .fn-reader-back'));
   assert.equal(app.doc.querySelector('.fn-reader-bar .fn-reader-back, .fn-note-browser h2'), null);
   const actions = [...app.doc.querySelectorAll('.fn-note-actions button')].map((button) => button.getAttribute('aria-label'));
-  assert.deepEqual(actions, ['Edit', 'Sharing', 'Version history', 'Delete note']);
+  assert.deepEqual(actions, ['Edit', 'Sharing', 'Version History', 'Delete Note']);
   app.doc.querySelector('.fn-note-actions .fn-reader-share').click();
   await until(() => app.doc.querySelector('.fn-share-modal #visibility'));
   app.select('.fn-share-modal #visibility', 'public');
@@ -1258,7 +1389,7 @@ test('the editor writes on the page: properties fold away and live counts float 
   const { view } = await openEditor(app);
   assert.equal([...app.doc.querySelectorAll('.trek-label')].some((label) => /^(Title|Markdown|Properties)$/.test(label.textContent)),
     false);
-  const stats = () => app.doc.querySelector('.fn-writing-stats').textContent;
+  const stats = () => visible(app.doc.querySelector('.fn-writing-stats').textContent);
   assert.match(stats(), /^Words: 4Characters: 14$/);
   view.dispatch({ changes: { from: view.state.doc.length, insert: ' 末班车' } });
   await until(() => /Words: 7/.test(stats()));
@@ -1350,7 +1481,8 @@ test('unlinked mentions stay folded under the backlinks, and linking them lists 
   app.doc.querySelector('.fn-mention-link').click();
   await until(() => !app.doc.querySelector('.fn-mentions')
     && app.doc.querySelector('.fn-backlink-title')?.textContent === 'Kyoto in autumn');
-  assert.equal(app.doc.querySelector('[role="status"]').textContent, 'Linked the mentions in “Kyoto in autumn”.');
+  // The note's name is isolated, so a right-to-left title keeps its punctuation inside the sentence.
+  assert.equal(app.doc.querySelector('[role="status"]').textContent, 'Linked the mentions in “\u2068Kyoto in autumn\u2069”.');
 });
 
 test('the history window reads an earlier version and restores it', async (t) => {
@@ -1366,17 +1498,17 @@ test('the history window reads an earlier version and restores it', async (t) =>
     if (sub === '/restore') return { ...app.note(), title: 'Japan notes', content: '## Older\nPaper tickets.', version: 2 };
   } });
   await app.open();
-  app.doc.querySelector('.fn-note-actions [aria-label="Version history"]').click();
+  app.doc.querySelector('.fn-note-actions [aria-label="Version History"]').click();
   await until(() => app.doc.querySelectorAll('.fn-history-entry').length === 3);
   const entries = [...app.doc.querySelectorAll('.fn-history-entry')];
   assert.match(entries[0].textContent, /^Current version/); assert.match(entries[1].textContent, /Japan notes · sherwin/);
   assert.equal(app.doc.querySelector('.fn-history-reader .fn-history-title').textContent, 'Japan tips');
   assert.equal([...app.doc.querySelectorAll('.fn-history-reader button')]
-    .some((button) => button.textContent === 'Restore this version'), false);
+    .some((button) => button.textContent === 'Restore This Version'), false);
   entries[1].click();
   await until(() => app.doc.querySelector('.fn-history-reader h2.fn-history-title')?.textContent === 'Japan notes');
   await until(() => app.doc.querySelector('.fn-history-reader .fn-markdown h2')?.textContent === 'Older');
-  app.click('Restore this version');
+  app.click('Restore This Version');
   await until(() => app.calls.some((call) => call.sub === '/restore'));
   assert.deepEqual({ ...app.calls.find((call) => call.sub === '/restore').body },
     { note_id: '11111111-1111-1111-1111-111111111111', version_id: 'v1', version: 1 });
@@ -1413,7 +1545,7 @@ test('the editor shows an embedded note in place until the caret reaches its lin
   const type = (text) => view.dispatch({ changes: { from: view.state.selection.main.head, insert: text },
     selection: { anchor: view.state.selection.main.head + text.length }, userEvent: 'input.type' });
   type('\n'); type('/'); await until(() => app.doc.querySelector('.fn-editor-menu--slash'));
-  type('embed'); await until(() => app.doc.querySelector('.fn-editor-menu .is-active .fn-editor-menu-title')?.textContent === 'Embed note');
+  type('embed'); await until(() => app.doc.querySelector('.fn-editor-menu .is-active .fn-editor-menu-title')?.textContent === 'Embed Note');
   content.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   await until(() => app.doc.querySelector('.fn-editor-menu--link .fn-editor-menu-title')?.textContent === 'Kyoto');
   content.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -1465,22 +1597,24 @@ test('the outline lists a note’s headings and closes once one is chosen', asyn
   await until(() => !app.doc.querySelector('.fn-outline-popover'));
 });
 
-test('⌘O finds a note, > runs a command, and Escape closes the switcher', async (t) => {
+test('⌘O offers the notes opened last, finds a note, ⌘K runs a command, and Escape closes the switcher', async (t) => {
   const app = await ui(t, { invoke: (sub) => sub.startsWith('/link-targets')
     ? { notes: [{ id: '22222222-2222-2222-2222-222222222222', title: 'Osaka eats', path: 'Food' }] } : undefined });
   await app.open();
   const press = (key, init = {}) => app.window.dispatchEvent(new app.window.KeyboardEvent('keydown', { key, bubbles: true, ...init }));
   press('o', { metaKey: true });
   await until(() => app.doc.querySelector('.fn-palette-row'));
-  assert.equal(app.doc.querySelector('.fn-palette-label').textContent, 'Osaka eats');
+  assert.deepEqual([...app.doc.querySelectorAll('.fn-palette-label')].map((node) => node.textContent), ['Japan tips', 'Clear Recent']);
+  app.input('.fn-palette-input', 'o');
+  await until(() => app.doc.querySelector('.fn-palette-label')?.textContent === 'Osaka eats');
   assert.equal(app.doc.querySelector('.fn-palette-detail').textContent, 'Food');
   const input = app.doc.querySelector('.fn-palette-input');
   input.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await until(() => !app.doc.querySelector('.fn-palette'));
-  press('p', { ctrlKey: true });
+  press('k', { ctrlKey: true });
   await until(() => app.doc.querySelector('.fn-palette-input')?.value === '>');
   const labels = [...app.doc.querySelectorAll('.fn-palette-label')].map((node) => node.textContent);
-  assert.ok(labels.includes('Edit') && labels.includes('Version history'), labels.join());
+  assert.ok(labels.includes('Edit') && labels.includes('Version History'), labels.join());
   app.input('.fn-palette-input', '>edit');
   await until(() => app.doc.querySelectorAll('.fn-palette-row').length === 1);
   app.doc.querySelector('.fn-palette-input').dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -1574,6 +1708,19 @@ test('a note copies as Markdown that imports back: properties as front matter, i
   assert.match(body, /^See \[\[Osaka\]\]/);
 });
 
+test('each library keeps its own Recently deleted', async (t) => {
+  const gone = { id: '33333333-3333-4333-8333-333333333334', title: 'Public plan', icon: null, deleted_at: new Date().toISOString(),
+    purge_at: new Date(Date.now() + KEPT_MS).toISOString() };
+  const app = await ui(t, { invoke: (sub) => sub === '/deleted?library=public' ? [gone]
+    : sub.startsWith('/deleted?library=') ? [] : sub.startsWith('/public') ? { notes: [], has_more: false } : undefined });
+  const binRow = () => app.doc.querySelector('.fn-finder-column[data-column="0"] .fn-finder-bin .fn-finder-row');
+  assert.equal(binRow(), null);
+  app.doc.querySelectorAll('[role="tab"]')[1].click();
+  await until(() => binRow());
+  binRow().click();
+  await until(() => app.doc.querySelector('[data-bin] .fn-finder-row')?.textContent.includes('Public plan'));
+});
+
 test('Recently deleted sits at the foot of the library while it holds a note, and recovers it or deletes it permanently', async (t) => {
   const gone = { id: '33333333-3333-4333-8333-333333333333', title: 'Old plan', icon: null, deleted_at: new Date().toISOString(),
     purge_at: new Date(Date.now() + KEPT_MS).toISOString() };
@@ -1582,7 +1729,7 @@ test('Recently deleted sits at the foot of the library while it holds a note, an
     if (sub === '/deleted' && init?.method === 'POST') {
       bin = []; return init.body.action === 'recover' ? { ...gone } : { deleted: true };
     }
-    if (sub === '/deleted') return bin;
+    if (sub === '/deleted?library=private') return bin;
     if (sub.startsWith('/deleted?id=')) return { ...gone, content: '# Kept text', properties: [], updated_at: gone.deleted_at };
   } });
   const binRow = () => app.doc.querySelector('.fn-finder-column[data-column="0"] .fn-finder-bin .fn-finder-row');
@@ -1590,20 +1737,21 @@ test('Recently deleted sits at the foot of the library while it holds a note, an
   assert.equal(app.doc.querySelectorAll('.fn-scope-tab').length, 2);
   await until(() => binRow()); binRow().click(); await until(() => row()?.textContent.includes('Old plan'));
   assert.equal(binRow().getAttribute('aria-current'), 'true');
-  assert.equal(app.doc.querySelector('.fn-finder-crumb[aria-current="location"]').textContent, 'Recently deleted');
+  assert.equal(app.doc.querySelector('.fn-finder-crumb[aria-current="location"]').textContent, 'Recently Deleted');
   assert.match(app.doc.querySelector('.fn-finder-preview .fn-preview-empty').textContent, /30 days/);
   row().click(); await until(() => app.doc.querySelector('.fn-finder-preview .fn-markdown h1')?.textContent === 'Kept text');
-  assert.match(app.doc.querySelector('.fn-finder-preview .fn-preview-meta').textContent, /^Deleted Today .*Deleted permanently on /);
+  const meta = visible(app.doc.querySelector('.fn-finder-preview .fn-preview-meta').textContent);
+  assert.match(meta, /^Deleted Today .*Deleted permanently on /);
   app.click('Recover');
   await until(() => app.calls.some((call) => call.sub === '/deleted' && call.body?.action === 'recover' && call.body.id === gone.id));
   await until(() => app.doc.querySelector('[data-bin] .fn-finder-empty')?.textContent === 'No deleted notes');
 
   bin = [gone];
   app.doc.querySelector('.fn-finder-toolbar .fn-refresh').click(); await until(() => row());
-  assert.deepEqual((await app.menu('Old plan')).map((item) => item.textContent), ['Recover', 'Delete permanently']);
+  assert.deepEqual((await app.menu('Old plan')).map((item) => item.textContent), ['Recover', 'Delete Permanently']);
   [...app.doc.querySelectorAll('.fn-context-menu [role="menuitem"]')].at(-1).click();
   await until(() => app.calls.some((call) => call.sub === '/deleted' && call.body?.action === 'delete'));
-  assert.match(app.confirmations.at(-1).message, /Delete “Old plan” permanently/);
+  assert.match(visible(app.confirmations.at(-1).message), /Delete “Old plan” permanently/);
   await until(() => !row());
   // Once empty and left, it steps out of the library.
   app.doc.querySelector('.fn-finder-crumb').click(); await until(() => !binRow());
@@ -1618,10 +1766,10 @@ test('a trip holding a snapshot of the note can only be opened from the library,
   await app.open();
   app.doc.querySelector('.fn-reader-share').click(); await until(() => app.doc.querySelector('.fn-linked-trip-list'));
   const rows = [...app.doc.querySelectorAll('.fn-linked-trip-list li')];
-  assert.equal(rows[0].querySelector('[aria-label="Remove from Japan trip"]') !== null, true);
-  assert.equal(rows[1].querySelector('[aria-label="Remove from Korea"]'), null);
+  assert.equal(removal(rows[0], 'Japan trip') !== undefined, true);
+  assert.equal(removal(rows[1], 'Korea'), undefined);
   assert.match(rows[1].textContent, /Snapshot/);
-  rows[0].querySelector('[aria-label="Remove from Japan trip"]').click();
+  removal(rows[0], 'Japan trip').click();
   await until(() => app.calls.some((call) => call.sub === '/trip' && call.body?.action === 'unlink'));
   assert.equal(JSON.stringify(app.calls.find((call) => call.body?.action === 'unlink').body),
     JSON.stringify({ action: 'unlink', trip_id: 10, note_id: app.note().id, mode: 'live' }));
@@ -1647,7 +1795,7 @@ test('a trip keeps what its editors remove in its own Recently deleted, and brin
   assert.match(app.doc.querySelector('.fn-finder-preview .fn-preview-empty').textContent, /removed from this trip/);
   app.doc.querySelector('[data-bin] .fn-finder-row').click();
   await until(() => app.doc.querySelector('.fn-finder-preview .fn-markdown h1')?.textContent === 'Temples');
-  assert.match(app.doc.querySelector('.fn-finder-preview .fn-preview-meta').textContent, /^Removed Today /);
+  assert.match(visible(app.doc.querySelector('.fn-finder-preview .fn-preview-meta').textContent), /^Removed Today /);
   assert.match(app.doc.querySelector('.fn-finder-preview .fn-note-mode').textContent, /Snapshot/);
   app.click('Recover');
   await until(() => app.calls.some((call) => call.body?.action === 'deleted_recover' && call.body.trip_id === 10

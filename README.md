@@ -10,7 +10,7 @@ Works with TREK 4.1 or later; add [Trip Fieldnotes](https://github.com/Tangerine
 
 ## Screenshots
 
-![Fieldnotes: the library in columns in the light theme, beside the same travel note in the dark theme](./docs/screenshot.png)
+![Fieldnotes: the library in columns in the light theme, with the same library in the dark theme standing behind it](./docs/screenshot.png)
 
 ## What it does
 
@@ -47,7 +47,7 @@ The editor is built on Markdown and follows the conventions of common Markdown e
 <tr>
 <td width="33%" valign="top"><p><b>💡 Callouts</b><br>Write <code>&gt; [!tip]</code>, <code>[!warning]</code> or <code>[!danger]</code> to turn a quote into a tinted box for the things not to miss, the way Obsidian does. Add <code>-</code> after the type to fold it until it is needed.</p></td>
 <td width="33%" valign="top"><p><b>🧭 Outline</b><br>A long guide gets an outline button. It lists the headings, and choosing one takes you straight there.</p></td>
-<td width="33%" valign="top"><p><b>⚡ Quick open</b><br><kbd>⌘O</kbd> finds any note as you type. Start with <code>&gt;</code> to run a command, or <code>#</code> to jump to a heading of the note you are reading; <kbd>⌘P</kbd> opens the commands directly.</p></td>
+<td width="33%" valign="top"><p><b>⚡ Quick open</b><br><kbd>⌘O</kbd> lists the notes you opened last and finds any note as you type. Start with <code>&gt;</code> to run a command, or <code>#</code> to jump to a heading of the note you are reading; <kbd>⌘K</kbd> opens the commands directly.</p></td>
 </tr>
 </table>
 
@@ -57,9 +57,9 @@ The editor is built on Markdown and follows the conventions of common Markdown e
 <tr>
 <td width="50%" valign="top"><img src="./docs/library.png" alt="The library in columns: folders, sub-folders and notes, with the chosen note previewed on the right" width="100%"></td>
 <td width="50%" valign="top">
-<p><b>Folders</b><br>Organise notes in folders and sub-folders, as deep as you need, and browse them in columns as in the Finder: one click previews a note, a second opens it. Drag a note onto a folder to move it; folders can be dragged into other folders too. A folder can only be deleted once it is empty, so no note is lost by accident.</p>
+<p><b>Folders</b><br>Organise notes in folders and sub-folders, as deep as you need, and browse them in columns as in the Finder: one click previews a note, a second opens it. The columns grow with the window, from a laptop to a 27-inch display, and always fit on the page. Drag a note onto a folder to move it, or choose Move to… from its menu, which works on a phone too; folders move the same way. Command-click or Shift-click several notes to move or delete them together, and drag the line between two columns to make them wider. A folder can only be deleted once it is empty, so no note is lost by accident.</p>
 <p><b>Icons</b><br>A folder can have an emoji or an icon of up to 8 characters. A note can have an emoji or an uploaded image, which is cropped to a centred square.</p>
-<p><b>Two libraries</b><br>The private library shows your own notes and the notes others share with you, marked "Shared with me". The public library shows every note made public on your TREK.</p>
+<p><b>Two libraries</b><br>Every note and folder sits in one of two libraries. The private library holds your own notes and the ones others share with you; the public library holds what everyone signed in to your TREK can read, and you write and arrange there as you do in the private one. To move something across, drag it onto the other library's tab or change its visibility: everything inside it that you own goes along.</p>
 </td>
 </tr>
 </table>
@@ -67,9 +67,9 @@ The editor is built on Markdown and follows the conventions of common Markdown e
 <table>
 <tr>
 <td width="50%" valign="top">
-<p><b>Recently deleted</b><br>A deleted note waits at the foot of the library for 30 days, images and history included, ready to be recovered where it was. Delete it permanently from there when you are sure. Removing a note from the library never touches a trip’s snapshot of it: that copy belongs to the trip.</p>
+<p><b>Recently deleted</b><br>Deleting a note asks nothing: the notice that follows has Undo, as the Finder moves a file to the Trash. A deleted note waits at the foot of its library for 30 days, images and history included, ready to be recovered where it was; each library keeps its own, so a public note is found in the public one. Delete it permanently from there when you are sure. Removing a note from the library never touches a trip’s snapshot of it: that copy belongs to the trip.</p>
 </td>
-<td width="50%" valign="top"><img src="./docs/deleted.png" alt="Recently deleted: a deleted note in preview, with the date it will be deleted permanently, Recover and Delete permanently" width="100%"></td>
+<td width="50%" valign="top"><img src="./docs/deleted.png" alt="Recently deleted: a deleted note in preview, with the date it will be deleted permanently, Recover and Delete Permanently" width="100%"></td>
 </tr>
 </table>
 
@@ -115,7 +115,7 @@ The editor is built on Markdown and follows the conventions of common Markdown e
 <table>
 <tr>
 <td width="33%" valign="top"><p><b>🔒 Private by default</b><br>A new note is visible only to you until you invite someone, make it public, or bring it into a trip.</p></td>
-<td width="33%" valign="top"><p><b>🌐 Public notes</b><br>A note can be made public, so everyone signed in to your TREK can read it in the public library. If any folder above it is private, the note stays private.</p></td>
+<td width="33%" valign="top"><p><b>🌐 Public notes</b><br>A note or folder moved to the public library can be read by everyone signed in to your TREK. Private folders above it become public too, after Fieldnotes names them and asks, but only their names show; what else they hold stays private.</p></td>
 <td width="33%" valign="top"><p><b>👤 What only the owner decides</b><br>Editors can change the content. Who can see the note, which folder it is in, and whether it can be shared live with a trip are decided by the owner.</p></td>
 </tr>
 </table>
@@ -165,7 +165,7 @@ An AI assistant connected to TREK can use the `list_trip_notes` tool to read the
 
 <table>
 <tr>
-<td width="33%" valign="top"><p><b>🌍 Languages</b><br>The interface and error messages follow TREK's language setting, in 27 languages: English, Simplified Chinese, Traditional Chinese, Japanese, Korean, Thai, Vietnamese, Indonesian, German, Spanish, Catalan, French, Italian, Dutch, Brazilian Portuguese, Swedish, Estonian, Hungarian, Czech, Slovak, Polish, Ukrainian, Russian, Greek, Turkish, Azerbaijani and Arabic, with a right-to-left layout for Arabic.</p></td>
+<td width="33%" valign="top"><p><b>🌍 Languages</b><br>The interface and error messages follow TREK's language setting, in 28 languages: English, Simplified Chinese, Traditional Chinese, Japanese, Korean, Thai, Vietnamese, Indonesian, German, Spanish, Catalan, French, Italian, Dutch, Brazilian Portuguese, Swedish, Estonian, Hungarian, Czech, Slovak, Polish, Ukrainian, Russian, Greek, Turkish, Azerbaijani, Arabic and Hebrew, with a right-to-left layout for Arabic and Hebrew.</p></td>
 <td width="33%" valign="top"><p><b>📝 Nothing lost by leaving</b><br>Notes save as you type, so you can leave one at any moment. The one exception is a new note you have started but not yet created: if you have typed into it, Fieldnotes asks before you leave.</p></td>
 <td width="33%" valign="top"><p><b>⚠️ Error messages</b><br>When something fails, the reason is shown, such as "A folder with this name already exists here" or "This note changed. Reload before saving.", rather than a status code.</p></td>
 </tr>

@@ -1,5 +1,5 @@
 import { isPhone } from './media';
-import { menuKeyPoint, noteGlyph, type MenuPoint } from './finder';
+import { menuKeyPoint, noteGlyph, rowName, type MenuPoint } from './finder';
 import type { Translate } from './i18n';
 
 
@@ -15,7 +15,7 @@ export function DeletedColumn({ notes, position, selectedId, menuId, onSelect, o
   onSelect: (note: DeletedNote) => void; onMenu: (note: DeletedNote, at: MenuPoint) => void; t: Translate;
 }) {
   return <div className="fn-finder-column is-active" data-column={position} data-bin="true" role="group"
-    aria-label={t('Recently deleted', '最近删除')}>
+    aria-label={t('Recently Deleted', '最近删除')}>
     {notes.map((note) => <button key={note.id} type="button" data-kind="deleted" data-id={note.id}
       className={`fn-finder-row${menuId === note.id ? ' is-context' : ''}`} aria-current={selectedId === note.id ? 'true' : undefined}
       onClick={(event) => isPhone() ? onMenu(note, { x: event.clientX, y: event.clientY, touch: true }) : onSelect(note)}
@@ -27,7 +27,7 @@ export function DeletedColumn({ notes, position, selectedId, menuId, onSelect, o
         const point = menuKeyPoint(event, event.currentTarget);
         if (point) { event.preventDefault(); onMenu(note, point); }
       }}>
-      {noteGlyph(note)}<span className="fn-finder-name">{note.title}</span>
+      {noteGlyph(note)}{rowName(note.title)}
     </button>)}
     {!notes.length && <p className="fn-finder-empty">{t('No deleted notes', '没有已删除的笔记')}</p>}
   </div>;

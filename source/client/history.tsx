@@ -88,11 +88,11 @@ export function HistoryView({ noteId, current, invoke, locale, t, busy, render, 
         <span className="fn-history-when trek-muted">{chosen ? version && `${dayLabel(version.edited_at)} · ${time.format(
           new Date(version.edited_at))}` : t('Current version', '当前版本')}</span>
         {chosen && version && <button type="button" className="trek-btn trek-btn--primary" disabled={busy}
-          onClick={() => onRestore(version)}><Icon name="reopen" />{t('Restore this version', '恢复此版本')}</button>}
+          onClick={() => onRestore(version)}><Icon name="reopen" />{t('Restore This Version', '恢复此版本')}</button>}
       </div>
       {shown && <>
         {shown.icon && <NoteIcon icon={shown.icon} className="fn-note-icon--large" />}
-        <h2 className="fn-history-title">{shown.title}</h2>
+        <h2 className="fn-history-title"><bdi>{shown.title}</bdi></h2>
         {render(shown.content, chosen)}
       </>}
     </article>

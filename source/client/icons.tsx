@@ -40,15 +40,22 @@ export const ICON_PATHS: Record<IconName, string> = {
   share: 'M12 8.5a3 3 0 1 1-6 0a3 3 0 1 1 6 0z M3.5 19a5.5 5.5 0 0 1 11 0M16 5.8a3 3 0 0 1 0 5.4M17.5 14.2a5.5 5.5 0 0 1 3 4.8',
 };
 
+// Icons that point along the line (back, forward, out) or draw lines of text or the side a panel opens on mirror in RTL through
+// `data-mirror`, as Apple's guidelines ask; clocks, arrows round a circle, tools and the check mark keep their shape.
+const MIRRORED = new Set((['chevron-left', 'chevron-right', 'note', 'note-plus', 'library', 'outline', 'sidebar', 'comment', 'open'] as
+  IconName[]).map((name) => ICON_PATHS[name]));
+
 export function Icon({ name }: { name: IconName }) {
   return <svg className="fn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"
-    strokeLinejoin="round" aria-hidden="true"><path d={ICON_PATHS[name]} /></svg>;
+    strokeLinejoin="round" aria-hidden="true" data-mirror={MIRRORED.has(ICON_PATHS[name]) || undefined}>
+    <path d={ICON_PATHS[name]} /></svg>;
 }
 
 // The same kind of icon for code that builds its DOM by hand; its stroke comes from the class's CSS.
-export function iconElement(doc: Document, path: string, className = 'fn-icon') {
+export function iconElement(doc: Document, path: string, className = 'fn-icon', mirror = MIRRORED.has(path)) {
   const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('class', className);
+  if (mirror) svg.setAttribute('data-mirror', '');
   const shape = doc.createElementNS(svg.namespaceURI, 'path'); shape.setAttribute('d', path); svg.append(shape);
   return svg;
 }

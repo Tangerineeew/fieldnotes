@@ -1,5 +1,7 @@
-import { EditorSelection, EditorState, Facet, StateEffect, StateField, Transaction, type Extension, type Range } from '@codemirror/state';
-import { Decoration, EditorView, WidgetType, keymap, placeholder, type Command, type DecorationSet } from '@codemirror/view';
+import { EditorSelection, EditorState, Facet, RangeSetBuilder, StateEffect, StateField, Transaction, type Extension,
+  type Range } from '@codemirror/state';
+import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, placeholder, type Command, type DecorationSet,
+  type ViewUpdate } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { LanguageSupport, ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import { markdownKeymap, markdownLanguage } from '@codemirror/lang-markdown';
@@ -178,6 +180,22 @@ const rule = Decoration.replace({ widget: new RuleWidget() });
 const markClass = (cls: string) => Decoration.mark({ class: cls });
 const lineClass = (cls: string) => Decoration.line({ class: cls });
 
+// Each line takes the direction of its own first letter, as the rendered note does, and CodeMirror measures every line by it.
+const autoDirection = Decoration.line({ attributes: { dir: 'auto' } });
+function lineDirections(view: EditorView) {
+  const builder = new RangeSetBuilder<Decoration>(); const { doc } = view.state;
+  for (let line = doc.lineAt(view.viewport.from); ; line = doc.line(line.number + 1)) {
+    builder.add(line.from, line.from, autoDirection);
+    if (line.to >= view.viewport.to || line.number === doc.lines) break;
+  }
+  return builder.finish();
+}
+const bidiLines: Extension = [EditorView.perLineTextDirection.of(true), ViewPlugin.fromClass(class {
+  decorations: DecorationSet;
+  constructor(view: EditorView) { this.decorations = lineDirections(view); }
+  update(update: ViewUpdate) { if (update.docChanged || update.viewportChanged) this.decorations = lineDirections(update.view); }
+}, { decorations: (plugin) => plugin.decorations })];
+
 // `embed` marks `![[…]]` standing alone on its line; `from` then includes the `!`.
 function wikilinks(state: EditorState) {
   const text = state.doc.toString();
@@ -243,7 +261,7 @@ function buildDecorations(state: EditorState): DecorationSet {
       const trek = resolved && 'trek' in resolved ? resolved.trek : undefined;
       const widget = isTrekTarget(note) ? new TrekChipWidget(trekChipHtml(trekRef(note), link.label, trek))
         : resolved?.unavailable && isNoteId(note) && assets.text
-        ? new WikilinkWidget(`🔒 ${assets.text.unavailable}`, 'locked', assets.text.hint)
+        ? new WikilinkWidget(assets.text.unavailable, 'locked', assets.text.hint)
         : new WikilinkWidget(linkLabel(link.target, link.label, resolved?.title),
           resolved && !resolved.unavailable ? 'resolved' : 'pending');
       ranges.push(Decoration.replace({ widget }).range(start, link.to)); continue;
@@ -479,7 +497,7 @@ function menuSource(options: LiveEditorOptions): MenuSource {
   const run = (command: Command) => (view: EditorView) => { command(view); };
   const clipboard = (command: 'cut' | 'copy') => (view: EditorView) => { view.dom.ownerDocument.execCommand(command); };
   const image: MenuItem[] = options.onPickImage ? [{ label: t('Image', '图片'),
-    description: t('Upload from this device', '从设备上传，压缩后保存'), hint: '⌘⇧I',
+    description: t('Upload from This Device', '从设备上传，压缩后保存'), hint: '⌘⇧I',
     icon: 'image', keywords: 'image picture photo upload tupian 图片 照片 上传', run: () => options.onPickImage!() },
   { label: 'PDF', description: t('Upload a PDF to read in place', '上传 PDF，在笔记里直接阅读'), icon: 'pdf',
     keywords: 'pdf document file upload attachment wenjian 文件 文档 附件 上传', run: () => options.onPickImage!(true) }] : [];
@@ -518,10 +536,10 @@ function menuSource(options: LiveEditorOptions): MenuSource {
     if (line.text.trim()) view.dispatch({ selection: { anchor: line.to } });
     typeTrigger(view, `${line.text.trim() ? '\n' : ''}${trigger}`);
   };
-  const noteLink: MenuItem[] = options.searchNotes ? [{ label: t('Link to note', '链接到笔记'),
+  const noteLink: MenuItem[] = options.searchNotes ? [{ label: t('Link to Note', '链接到笔记'),
     description: t('Point to another note; renaming it keeps the link', '指向另一篇笔记，改名后链接依然有效'), hint: '[[',
     icon: 'note', keywords: 'link note wiki reference lianjie biji 链接 笔记 引用 双链', run: (view) => typeTrigger(view, '[[') },
-  { label: t('Embed note', '嵌入笔记'), description: t('Show another note, or one of its sections, here', '在这里显示另一篇笔记或其中一节'),
+  { label: t('Embed Note', '嵌入笔记'), description: t('Show another note, or one of its sections, here', '在这里显示另一篇笔记或其中一节'),
     hint: '![[', icon: 'embed', keywords: 'embed transclude note qianru 嵌入 笔记 引用', run: (view) => typeOnOwnLine(view, '![[') }] : [];
   const blocks = (): MenuItem[] => [
     { label: t('Text', '文本'), description: t('Plain paragraph', '普通段落'), icon: 'T',
@@ -532,9 +550,9 @@ function menuSource(options: LiveEditorOptions): MenuSource {
       keywords: 'h2 heading biaoti 标题 二级标题', run: run(setBlock('## ')) },
     { label: t('Heading 3', '三级标题'), description: t('Small section heading', '小号章节标题'), hint: '###', icon: 'H3',
       keywords: 'h3 heading biaoti 标题 三级标题', run: run(setBlock('### ')) },
-    { label: t('To-do list', '待办清单'), description: t('Track tasks with checkboxes', '用复选框跟踪事项'),
+    { label: t('To-Do List', '待办清单'), description: t('Track tasks with checkboxes', '用复选框跟踪事项'),
       hint: '[ ]', icon: 'todo', keywords: 'todo task checkbox daiban 待办 清单 任务', run: run(setBlock('- [ ] ')) },
-    { label: t('Bulleted list', '无序列表'), description: t('A simple bulleted list', '简单的项目符号列表'),
+    { label: t('Bulleted List', '无序列表'), description: t('A simple bulleted list', '简单的项目符号列表'),
       hint: '-', icon: 'bullet', keywords: 'bullet list liebiao 列表 无序列表', run: run(setBlock('- ')) },
     { label: t('Quote', '引用'), description: t('Capture a quotation', '摘录一段引文'), hint: '>', icon: 'quote',
       keywords: 'quote blockquote yinyong 引用 引文', run: run(setBlock('> ')) },
@@ -542,7 +560,7 @@ function menuSource(options: LiveEditorOptions): MenuSource {
       icon: 'callout', keywords: 'callout tip note warning admonition tishi 提示 小贴士 注意 警告', run: run(setBlock('> [!tip] ')) },
   ];
   // `![[trek:` narrows the link menu to the trip's items, as this entry types it.
-  const tripItem = (): MenuItem[] => options.tripObjects?.().length ? [{ label: t('Trip item', '行程内容'),
+  const tripItem = (): MenuItem[] => options.tripObjects?.().length ? [{ label: t('Trip Item', '行程内容'),
     description: t('A place, booking, day or stay from this trip', '这次旅行中的地点、预订、日程或住宿'), hint: '![[trek:',
     icon: 'place', keywords: 'trip place booking reservation day stay hotel xingcheng 行程 地点 预订 日程 住宿 酒店',
     run: (view) => typeOnOwnLine(view, `![[${TREK_PREFIX}`) }] : [];
@@ -552,7 +570,7 @@ function menuSource(options: LiveEditorOptions): MenuSource {
       ...(image.length ? [{ label: t('Media', '媒体'), items: image }] : []),
       ...(fromTrip().length ? [{ label: t('From this trip', '来自这次旅行'), items: fromTrip() }] : []),
       ...(noteLink.length ? [{ label: t('Links', '链接'), items: noteLink }] : []),
-      { label: t('Basic blocks', '基础块'), items: [...blocks(), divider] },
+      { label: t('Basic Blocks', '基础块'), items: [...blocks(), divider] },
     ],
     links: options.searchNotes && (async (query, view) => {
       if (query.startsWith(TREK_PREFIX)) return tripSection(query.slice(TREK_PREFIX.length));
@@ -576,11 +594,11 @@ function menuSource(options: LiveEditorOptions): MenuSource {
           { label: t('Bold', '加粗'), hint: '⌘B', icon: 'B', run: run(toggleInline('**')) },
           { label: t('Italic', '斜体'), hint: '⌘I', icon: 'I', run: run(toggleInline('*')) },
           { label: t('Strikethrough', '删除线'), hint: '⌘⇧X', icon: 'S', run: run(toggleInline('~~')) },
-          { label: t('Inline code', '行内代码'), hint: '⌘E', icon: 'code', run: run(toggleInline('`')) },
+          { label: t('Inline Code', '行内代码'), hint: '⌘E', icon: 'code', run: run(toggleInline('`')) },
           { label: t('Link', '链接'), hint: '⌘K', icon: 'link', run: run(insertLink) },
         ] },
         { label: t('Insert', '插入'), items: [...image, ...noteLink, divider] },
-        { layout: 'icons', label: t('Turn into', '转换为'), items: blocks() },
+        { layout: 'icons', label: t('Turn Into', '转换为'), items: blocks() },
         { items: [
           { label: t('Cut', '剪切'), hint: '⌘X', icon: 'cut', disabled: !selected, run: clipboard('cut') },
           { label: t('Copy', '复制'), hint: '⌘C', icon: 'copy', disabled: !selected, run: clipboard('copy') },
@@ -641,7 +659,7 @@ export function createLiveEditor(parent: HTMLElement, doc: string, options: Live
   const view = new EditorView({
     parent,
     state: EditorState.create({ doc, extensions: [
-      options.collab || [history(), keymap.of(historyKeymap)], new LanguageSupport(markdownLanguage), EditorView.lineWrapping,
+      options.collab || [history(), keymap.of(historyKeymap)], new LanguageSupport(markdownLanguage), EditorView.lineWrapping, bidiLines,
       assetsField, focusField, previewField, contentLimit, linkOpener.of((href) => follow(view, href)),
       editorMenu(menuSource(options)),
       placeholder(options.t('Type / for blocks and images, or paste and drop images here', '输入 / 插入图片和块，也可直接粘贴或拖入图片')),

@@ -11,7 +11,7 @@ type PdfDocument = { numPages: number; getPage(number: number): Promise<PdfPage>
 type Engine = { open(data: Uint8Array): Promise<PdfDocument> };
 export type PdfText = { onePage: string; previous: string; next: string; all: string; close: string; failed: string };
 
-let text: PdfText = { onePage: '1 page', previous: 'Previous page', next: 'Next page', all: 'Show all pages',
+let text: PdfText = { onePage: '1 page', previous: 'Previous Page', next: 'Next Page', all: 'Show All Pages',
   close: 'Close', failed: 'This PDF could not be opened.' };
 export const setPdfText = (next: PdfText) => { text = next; };
 export const isPdf = (source?: string) => Boolean(source?.startsWith('data:application/pdf'));
