@@ -1,6 +1,7 @@
 import type { Translate } from './i18n';
 import type { ReferenceLinks } from './markdown';
 import { hangFrom, isPhone } from './media';
+import { sheetDrag } from './sheet';
 
 
 // A snapshot shows its trip's places, bookings, days and stays: `[[trek:place/12|Name]]` in running text is a small tag that
@@ -264,6 +265,7 @@ function showCard(chip: HTMLElement, references: ReferenceLinks, pinned: boolean
   element.append(range.createContextualFragment(trekCardHtml(trekRef(target), chip.dataset.label,
     link && 'trek' in link ? link.trek : undefined)));
   doc.body.append(element);
+  let scrim: HTMLElement | null = null; let detach = () => {};
   if (!isPhone()) {
     const box = chip.getBoundingClientRect(); const { width, height } = element.getBoundingClientRect();
     const below = box.bottom + 6 + height <= win.innerHeight - 8 || box.top - 6 - height < 8;
@@ -271,20 +273,30 @@ function showCard(chip: HTMLElement, references: ReferenceLinks, pinned: boolean
     element.style.left = `${left}px`;
     element.style.top = `${below ? box.bottom + 6 : box.top - 6 - height}px`;
     element.style.transformOrigin = `${below ? 'top' : 'bottom'} ${side}`;
-  } else element.classList.add('fn-trek-pop--sheet');
+  } else {
+    // On a phone the card is a sheet over a dimmed page, as the outline is: the dimmed page takes the press that closes it.
+    element.classList.add('fn-trek-pop--sheet');
+    const grabber = doc.createElement('div'); grabber.className = 'fn-sheet-grabber'; grabber.setAttribute('aria-hidden', 'true');
+    element.prepend(grabber);
+    scrim = doc.createElement('div'); scrim.className = 'fn-trek-scrim'; scrim.setAttribute('aria-hidden', 'true');
+    scrim.addEventListener('click', () => close());
+    element.before(scrim);
+    detach = sheetDrag(element, () => close());
+  }
   const follow = (event: MouseEvent) => {
     const anchor = (event.target as HTMLElement).closest('a');
     if (!anchor) return;
     event.preventDefault(); close(); open(anchor.getAttribute('href') || '');
   };
   const outside = (event: Event) => {
-    if (!element.contains(event.target as Node) && !chip.contains(event.target as Node)) close();
+    const target = event.target as Node;
+    if (!element.contains(target) && !chip.contains(target) && !scrim?.contains(target)) close();
   };
   const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.stopPropagation(); close(); chip.focus(); } };
   const leave = () => { if (!popover?.pinned) { win.clearTimeout(hoverTimer); hoverTimer = win.setTimeout(close, 220); } };
   const stay = () => win.clearTimeout(hoverTimer);
   function close() {
-    win.clearTimeout(hoverTimer); element.remove(); chip.removeAttribute('aria-expanded');
+    win.clearTimeout(hoverTimer); detach(); element.remove(); scrim?.remove(); chip.removeAttribute('aria-expanded');
     doc.removeEventListener('pointerdown', outside, true); win.removeEventListener('keydown', escape, true);
     if (popover?.element === element) popover = null;
   }

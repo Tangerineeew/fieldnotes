@@ -1,8 +1,9 @@
-// Writes one HTML page per README image: a quiet near-white ground and the cropped interface in one window. Covers add the
-// app tile, the name and the tagline above the light window, which runs off the bottom edge with the dark theme behind it.
+// Writes one HTML page per README image: a quiet near-white ground and the cropped interface in one window. Covers put the
+// app tile, the name and the tagline above a MacBook showing the light page in Safari, with a phone showing the dark one in front.
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { WORK as DIR } from './lib.mjs';
+import { DEVICE_CSS, laptop, iphone, iphoneHeight } from './devices.mjs';
 
 
 const RAW = `${DIR}/raw`;
@@ -27,9 +28,9 @@ const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1
 
 // Shots are 2x, so a CSS pixel of the page they came from is two of theirs.
 const pixels = (file) => Number(/pixelWidth: (\d+)/.exec(execFileSync('sips', ['-g', 'pixelWidth', file]).toString())[1]);
-const windowOf = (shot, crop, width, extra = '', kind = 'window') => {
+const windowOf = (shot, crop, width, extra = '') => {
   const scale = width / crop.w; const natural = pixels(`${RAW}/${shot}.png`) / 2;
-  return `<div class="${kind}" style="width:${width}px;height:${Math.round(crop.h * scale)}px;${extra}">
+  return `<div class="window" style="width:${width}px;height:${Math.round(crop.h * scale)}px;${extra}">
     <img src="file://${RAW}/${shot}.png" style="width:${natural * scale}px;left:${-crop.x * scale}px;top:${-crop.y * scale}px"></div>`;
 };
 const page = (name, width, height, body, lang) => fs.writeFileSync(`${DIR}/pages/${name}.html`, `<!doctype html>
@@ -41,14 +42,13 @@ const page = (name, width, height, body, lang) => fs.writeFileSync(`${DIR}/pages
   .window { position: absolute; overflow: hidden; border-radius: 16px; background: #fff;
     box-shadow: 0 0 0 1px rgba(0, 0, 0, .06), 0 1px 3px rgba(0, 0, 0, .05), 0 24px 60px -24px rgba(0, 0, 0, .22); }
   .window img { position: absolute; height: auto; }
-  .window.behind { transform: perspective(1600px) rotateY(24deg) scale(.94); transform-origin: 0 50%;
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, .1), 0 30px 70px -28px rgba(0, 0, 0, .35); }
-  .head { position: absolute; left: 0; right: 0; top: 64px; display: grid; justify-items: center; text-align: center; }
-  .head b { display: grid; place-items: center; width: 60px; height: 60px; border-radius: 15px;
+  .head { position: absolute; left: 0; right: 0; top: 46px; display: grid; justify-items: center; text-align: center; }
+  .head b { display: grid; place-items: center; width: 56px; height: 56px; border-radius: 14px;
     background: linear-gradient(165deg, #3a3a3f, #141416); box-shadow: 0 8px 20px -8px rgba(0, 0, 0, .4); }
-  .head b svg { width: 32px; height: 32px; }
-  .head h1 { margin: 22px 0 0; font-size: 56px; font-weight: 600; letter-spacing: -.035em; line-height: 1.05; }
-  .head p { margin: 12px 0 0; font-size: 22px; color: #6e6e73; letter-spacing: -.005em; }
+  .head b svg { width: 30px; height: 30px; }
+  .head h1 { margin: 18px 0 0; font-size: 52px; font-weight: 600; letter-spacing: -.035em; line-height: 1.05; }
+  .head p { margin: 10px 0 0; font-size: 21px; color: #6e6e73; letter-spacing: -.005em; }
+  ${DEVICE_CSS}
 </style><body>${body}</body></html>`);
 
 const TAGLINE = {
@@ -56,19 +56,25 @@ const TAGLINE = {
   zh: { fieldnotes: '记录下旅途中积累的经验，下次出发随时用得上。', trip: '同行的人需要知道的，都放在旅行里。' },
 };
 
+// `node compose.mjs [name …]` writes only the named pages, such as fieldnotes-screenshot, in both languages.
+const only = process.argv.slice(2);
+const wanted = (name) => !only.length || only.includes(name);
+
 for (const lang of ['en', 'zh']) {
   const suffix = lang === 'zh' ? '.zh-CN' : '';
-  // The dark window stands behind and to the right, turned away and smaller, so the two read as stacked cards.
-  const cover = (out, name, tagline, light, dark, crop) => page(`${out}${suffix}`, 1600, 900,
-    `<div class="head"><b>${ICON}</b><h1>${name}</h1><p>${tagline}</p></div>`
-    + windowOf(dark, crop, 1120, 'left:700px;top:296px;', 'window behind')
-    + windowOf(light, crop, 1120, 'left:140px;top:346px;'), lang);
-  cover('fieldnotes-screenshot', 'Fieldnotes', TAGLINE[lang].fieldnotes, `${lang}-library-light`, `${lang}-library-dark`,
-    CROP.library);
-  cover('trip-screenshot', 'Trip Fieldnotes', TAGLINE[lang].trip, `${lang}-comments`, `${lang}-comments-dark`, CROP.comments);
+  // The phone stands in front of the laptop's right edge, barely turned, its foot just above the bottom edge.
+  const cover = (out, name, tagline, shot) => {
+    if (!wanted(out)) return;
+    page(`${out}${suffix}`, 1600, 900, `<div class="head"><b>${ICON}</b><h1>${name}</h1><p>${tagline}</p></div>`
+      + laptop(`${RAW}/${lang}-${shot}-mac.png`, lang, { x: 300, y: 252, width: 840 })
+      + iphone(`${RAW}/${lang}-${shot}-phone.png`, { x: 1130, y: 900 - 24 - iphoneHeight(262), width: 262 }), lang);
+  };
+  cover('fieldnotes-screenshot', 'Fieldnotes', TAGLINE[lang].fieldnotes, 'library');
+  cover('trip-screenshot', 'Trip Fieldnotes', TAGLINE[lang].trip, 'comments');
   // A feature sits whole in the middle of its image with an even margin, never drawn larger than it was taken; a small one
   // gets a small image rather than empty space.
   const feature = (out, shot, crop) => {
+    if (!wanted(out)) return;
     const fit = Math.min(1, 1040 / crop.w, 960 / crop.h); const width = Math.round(crop.w * fit); const height = Math.round(crop.h * fit);
     const margin = 80;
     page(`${out}${suffix}`, width + margin * 2, height + margin * 2,

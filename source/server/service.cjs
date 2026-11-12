@@ -2,8 +2,10 @@
 
 const { randomUUID } = require('node:crypto');
 const dns = require('node:dns/promises');
+const fs = require('node:fs');
 const https = require('node:https');
 const { isIP } = require('node:net');
+const path = require('node:path');
 const {
   assetBatch, maxImageBytes, maxPdfBytes, maxContentChars, maxContentBytes, maxPropertiesBytes, maxCommentChars, maxQuoteChars, quoteContextChars,
   maxTitleChars, maxIconChars, maxProperties, maxPropertyOptions, maxPropertyNameChars, maxPropertyTextChars, maxChecklistItems,
@@ -1880,8 +1882,21 @@ async function restoreVersion(ctx, userId, input) {
     properties: propertyFields(version.properties), icon: noteIcon(version.icon) }, { force: true });
 }
 
+// TREK tells a plugin nothing of its own version. The plugin process may read TREK's server package.json, which Node needs to load
+// plugin code, so it is found above the process's entry; anywhere else (a dev preview, another layout) the version is unknown.
+function trekVersion(entry = process.argv[1] || '') {
+  for (let dir = path.dirname(entry); ; dir = path.dirname(dir)) {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+      if (manifest.name === '@trek/server' && typeof manifest.version === 'string') return manifest.version;
+    } catch { /* not here, or not readable */ }
+    if (path.dirname(dir) === dir) return null;
+  }
+}
+
 async function handle(action, req, ctx) {
   const userId = actor(req);
+  if (action === 'host') return { trek: trekVersion() };
   if (action === 'part') return parts.store(ctx, userId, req.body);
   const body = await parts.expand(ctx, userId, req.body || {});
   const query = req.query || {};
@@ -2076,4 +2091,4 @@ async function respond(fn) {
   }
 }
 
-module.exports = { initialize, handle, tripAction, respond, deleteUserData, exportUserData };
+module.exports = { initialize, handle, tripAction, respond, deleteUserData, exportUserData, trekVersion };

@@ -176,8 +176,22 @@ export function FinderColumns<F extends FinderFolder, N extends FinderNote>({ in
     if (target.kind === 'note' && previewId !== target.note.id && !at.touch) onPreview(target.note);
     onMenu(target, at);
   };
-  // iOS never sends contextmenu for a long press, so a finger held still for half a second opens the menu itself, and the
-  // tap that ends the press is swallowed. Android sends both; whichever comes first opens it once.
+  // The sheet rises under the finger, so the tap that lifts it would land on a menu item; that one tap is swallowed wherever it
+  // lands, however the menu was opened, and if none comes soon after the finger lifts, the next deliberate tap is left alone.
+  const swallowRelease = () => {
+    const swallow = (event: MouseEvent) => {
+      event.preventDefault(); event.stopPropagation(); document.removeEventListener('click', swallow, true); press.current = null;
+    };
+    const expire = () => { document.removeEventListener('click', swallow, true); if (press.current?.fired) press.current = null; };
+    const lifted = () => {
+      document.removeEventListener('pointerup', lifted, true); document.removeEventListener('pointercancel', lifted, true);
+      window.setTimeout(expire, 400);
+    };
+    document.addEventListener('click', swallow, true);
+    document.addEventListener('pointerup', lifted, true); document.addEventListener('pointercancel', lifted, true);
+  };
+  // iOS never sends contextmenu for a long press, so a finger held still for half a second opens the menu itself. Android sends
+  // both; whichever comes first opens it once.
   const press = useRef<{ timer: number; x: number; y: number; fired: boolean } | null>(null);
   const endPress = () => { if (press.current && !press.current.fired) { window.clearTimeout(press.current.timer); press.current = null; } };
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>) {
@@ -187,15 +201,11 @@ export function FinderColumns<F extends FinderFolder, N extends FinderNote>({ in
     press.current = { x, y, fired: false, timer: window.setTimeout(() => {
       const target = targetAt(element);
       if (!target || !press.current) { press.current = null; return; }
-      press.current.fired = true; openMenu(target, { x, y, touch: true });
+      press.current.fired = true; openMenu(target, { x, y, touch: true }); swallowRelease();
     }, 500) };
   }
   function onPointerMove(event: React.PointerEvent<HTMLDivElement>) {
     if (press.current && Math.hypot(event.clientX - press.current.x, event.clientY - press.current.y) > 10) endPress();
-  }
-  function onClickCapture(event: React.MouseEvent<HTMLDivElement>) {
-    if (!press.current?.fired) return;
-    press.current = null; event.preventDefault(); event.stopPropagation();
   }
   function onContextMenu(event: React.MouseEvent<HTMLDivElement>) {
     const touch = Boolean(press.current);
@@ -205,6 +215,7 @@ export function FinderColumns<F extends FinderFolder, N extends FinderNote>({ in
     event.preventDefault();
     if (touch) { window.clearTimeout(press.current!.timer); press.current!.fired = true; }
     openMenu(target, { x: event.clientX, y: event.clientY, touch });
+    if (touch) swallowRelease();
   }
   // Up and down select the neighbouring row, right enters a folder, left returns to the parent column, Enter opens, and the
   // menu key or Shift+F10 opens the row's menu.
@@ -264,7 +275,7 @@ export function FinderColumns<F extends FinderFolder, N extends FinderNote>({ in
   }
   return <div ref={strip} className="fn-finder" style={widthStyle} onKeyDown={onKeyDown} onDragOver={onDragOver}
     onContextMenu={onContextMenu} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={endPress}
-    onPointerCancel={endPress} onClickCapture={onClickCapture}>
+    onPointerCancel={endPress}>
     {columns.map((parent, position) => {
       const folders = results ? [] : index.folders(parent); const notes = results || index.notes(parent);
       const selectedFolder = binOpen ? null : path[position] ?? null;

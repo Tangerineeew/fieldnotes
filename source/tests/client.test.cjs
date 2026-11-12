@@ -45,7 +45,8 @@ async function ui(t, options = {}) {
   const confirmations = [];
   let current = { id: '11111111-1111-1111-1111-111111111111', title: 'Japan tips', content: '# Bring an IC card',
     tags: ['Japan'], owner_id: 1, visibility: 'private', can_edit: true, version: 1, updated_at: '2026-09-21', ...options.note };
-  let context = { tripId: options.trip ? '10' : null, userId: 1, locale: options.locale || 'en' };
+  let context = { tripId: options.trip ? '10' : null, userId: 1, locale: options.locale || 'en',
+    ...(options.viewport ? { viewport: options.viewport } : {}) };
   // In-memory /collab server backed by a real Yjs document, mirroring server/collab.cjs.
   let server = null; let serverSeq = 0; const queued = []; const toB64 = (bytes) => Buffer.from(bytes).toString('base64');
   const materialize = () => {
@@ -213,7 +214,7 @@ test('Finder rows and empty space have their own context menus', async (t) => {
     'Date Created']);
   assert.deepEqual(blank.filter((item) => item.getAttribute('aria-checked') === 'true').map((item) => item.textContent), ['Date Modified']);
   blank.find((item) => item.textContent.includes('New Folder')).click();
-  await until(() => app.doc.querySelector('.fn-new-folder-popover #new-folder-name'));
+  await until(() => app.doc.querySelector('.fn-new-folder-popover #new-folder-label'));
 });
 
 test('a long path folds its middle into “…”, whose menu goes to the folders it hides, and search ends the toolbar', async (t) => {
@@ -288,6 +289,109 @@ test('a finger held on a Finder row opens its menu as a sheet and the tap that e
   app.doc.querySelector('.fn-menu-sheet-scrim').dispatchEvent(new app.window.Event('pointerdown', { bubbles: true }));
   await until(() => !app.doc.querySelector('.fn-menu-sheet'));
   row.click(); await until(() => row.getAttribute('aria-current') === 'true');
+});
+
+test('the tap that lifts a held finger never lands on the menu that rose under it', async (t) => {
+  const folder = { id: '22222222-2222-2222-2222-222222222222', owner_id: 1, parent_id: null, name: 'Japan', visibility: 'private',
+    role: 'editor', public_path: false, can_manage: true };
+  const app = await ui(t, { invoke: (sub) => sub === '/folders' ? [folder] : undefined });
+  const row = [...app.doc.querySelectorAll('.fn-finder-row')].find((item) => item.textContent.includes('Japan'));
+  const event = new app.window.MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 30, clientY: 30 });
+  Object.defineProperty(event, 'pointerType', { value: 'touch' }); row.dispatchEvent(event);
+  await until(() => app.doc.querySelector('.fn-menu-sheet'));
+  app.doc.dispatchEvent(new app.window.Event('pointerup', { bubbles: true }));
+  app.doc.querySelector('.fn-menu-sheet [role^="menuitem"]').click();
+  // Past the sheet's 200ms exit, so a menu that had taken the tap would be gone.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.ok(app.doc.querySelector('.fn-menu-sheet'));
+  assert.equal(row.getAttribute('aria-current'), null);
+});
+
+test('on Android, where a held finger sends contextmenu, the tap that lifts it never lands on the menu either', async (t) => {
+  const folder = { id: '22222222-2222-2222-2222-222222222222', owner_id: 1, parent_id: null, name: 'Japan', visibility: 'private',
+    role: 'editor', public_path: false, can_manage: true };
+  const app = await ui(t, { invoke: (sub) => sub === '/folders' ? [folder] : undefined });
+  const row = [...app.doc.querySelectorAll('.fn-finder-row')].find((item) => item.textContent.includes('Japan'));
+  const down = new app.window.MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 30, clientY: 30 });
+  Object.defineProperty(down, 'pointerType', { value: 'touch' }); row.dispatchEvent(down);
+  row.dispatchEvent(new app.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 30, clientY: 30 }));
+  await until(() => app.doc.querySelector('.fn-menu-sheet'));
+  app.doc.dispatchEvent(new app.window.Event('pointercancel', { bubbles: true }));
+  app.doc.querySelector('.fn-menu-sheet [role^="menuitem"]').click();
+  // Past the sheet's 200ms exit, so a menu that had taken the tap would be gone.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.ok(app.doc.querySelector('.fn-menu-sheet'));
+});
+
+test('the new folder popover closes on a press anywhere outside it', async (t) => {
+  const app = await ui(t);
+  await until(() => app.doc.querySelector('[aria-label="New Folder"]'));
+  app.doc.querySelector('[aria-label="New Folder"]').click();
+  await until(() => app.doc.querySelector('.fn-new-folder-popover'));
+  app.doc.querySelector('.fn-new-folder-popover input').dispatchEvent(new app.window.Event('pointerdown', { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(app.doc.querySelector('.fn-new-folder-popover'));
+  app.doc.body.dispatchEvent(new app.window.Event('pointerdown', { bubbles: true }));
+  await until(() => !app.doc.querySelector('.fn-new-folder-popover'));
+});
+
+test('on a phone a new folder is named in a window, not a popover', async (t) => {
+  const app = await ui(t);
+  await until(() => app.doc.querySelector('[aria-label="New Folder"]'));
+  app.window.matchMedia = (query) => ({ matches: /max-width: (700|860)px/.test(query), addEventListener() {}, removeEventListener() {} });
+  app.doc.querySelector('[aria-label="New Folder"]').click();
+  await until(() => app.doc.querySelector('.fn-new-folder-modal #new-folder-label'));
+  assert.equal(app.doc.querySelector('.fn-new-folder-popover'), null);
+  assert.equal(app.doc.querySelector('.fn-new-folder-modal h2').textContent, 'New Folder');
+  await until(() => app.doc.activeElement?.id === 'new-folder-label');
+  // A press inside the window is not a press outside a popover.
+  app.doc.querySelector('#new-folder-label').dispatchEvent(new app.window.Event('pointerdown', { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(app.doc.querySelector('.fn-new-folder-modal'));
+  app.input('#new-folder-label', 'Kyoto'); app.click('Create Folder');
+  await until(() => app.calls.some((call) => call.body?.action === 'create' && call.body.name === 'Kyoto'));
+  await until(() => !app.doc.querySelector('.fn-new-folder-modal'));
+});
+
+// A finger dragged from (x0, y0) to (x1, y1) in a few moves, as touch events arrive.
+function swipe(app, [x0, y0], [x1, y1], end = 'touchend') {
+  const send = (type, x, y) => {
+    const event = new app.window.Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'touches', { value: type === end ? [] : [{ clientX: x, clientY: y }] });
+    app.doc.dispatchEvent(event);
+  };
+  send('touchstart', x0, y0);
+  for (let step = 1; step <= 6; step++) send('touchmove', x0 + (x1 - x0) * step / 6, y0 + (y1 - y0) * step / 6);
+  send(end);
+}
+
+test('a swipe from the leading edge goes up a folder and out of a note, where the back control goes', async (t) => {
+  const app = await ui(t, { locale: 'zh', invoke: (sub) => sub === '/folders' ? treeFolders : undefined });
+  const crumbs = () => [...app.doc.querySelectorAll('.fn-finder-path .fn-finder-crumb')].map((crumb) => crumb.textContent);
+  await until(() => finderItem(app, '日本'));
+  finderItem(app, '日本').querySelector('.fn-finder-row').click();
+  await until(() => crumbs().length === 2);
+  swipe(app, [4, 300], [700, 310]);
+  await until(() => crumbs().length === 1);
+  await app.open('Japan tips');
+  swipe(app, [4, 300], [700, 310]);
+  await until(() => !app.doc.querySelector('.fn-layout-reader'));
+  assert.equal(app.doc.querySelector('.fn-shell').style.transform, '');
+});
+
+test('a swipe that starts away from the edge, runs mostly up and down, or is cancelled is left alone', async (t) => {
+  const app = await ui(t, { locale: 'zh', invoke: (sub) => sub === '/folders' ? treeFolders : undefined });
+  const crumbs = () => [...app.doc.querySelectorAll('.fn-finder-path .fn-finder-crumb')].map((crumb) => crumb.textContent);
+  await until(() => finderItem(app, '日本'));
+  finderItem(app, '日本').querySelector('.fn-finder-row').click();
+  await until(() => crumbs().length === 2);
+  swipe(app, [120, 300], [800, 310]);
+  swipe(app, [4, 300], [40, 600]);
+  // The system taking the gesture midway springs the page back, however far it had gone.
+  swipe(app, [4, 300], [700, 310], 'touchcancel');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(crumbs().length, 2);
+  assert.equal(app.doc.querySelector('.fn-shell').style.transform, '');
 });
 
 const treeFolders = [
@@ -457,6 +561,43 @@ test('switching library scope clears the old search text', async (t) => {
   app.doc.querySelectorAll('[role="tab"]')[1].click();
   await until(() => app.doc.querySelectorAll('[role="tab"]')[1].getAttribute('aria-selected') === 'true');
   assert.equal(app.doc.querySelector('#search').value, '');
+});
+
+test('switching library chooses the tab at the tap and slides the other library in once its notes arrive', async (t) => {
+  let arrive;
+  const kyoto = { id: '44444444-4444-4444-4444-444444444444', title: 'Kyoto eats', content: '', owner_id: 2, visibility: 'public',
+    can_edit: false, version: 1, updated_at: '2026-09-21' };
+  const app = await ui(t, { invoke: (sub) => sub.startsWith('/public')
+    ? new Promise((resolve) => { arrive = () => resolve({ notes: [kyoto], has_more: false }); }) : undefined });
+  const slides = [];
+  app.window.HTMLElement.prototype.animate = function () { slides.push(this.textContent); return { cancel() {} }; };
+  const tabs = () => app.doc.querySelectorAll('[role="tab"]');
+  const shows = (title) => [...app.doc.querySelectorAll('.fn-finder-row')].some((row) => row.textContent.includes(title));
+  tabs()[1].click();
+  await until(() => tabs()[1].getAttribute('aria-selected') === 'true');
+  assert.equal(app.doc.querySelector('.fn-scope-switcher').dataset.scope, 'public');
+  assert.ok(shows('Japan tips'));
+  assert.equal(tabs()[1].disabled, false);
+  assert.deepEqual(slides, []);
+  arrive();
+  await until(() => shows('Kyoto eats'));
+  assert.equal(slides.length, 1);
+  assert.ok(slides[0].includes('Kyoto eats') && !slides[0].includes('Japan tips'));
+});
+
+test('a tap that comes while a note is still filling in is kept, and runs once it has', async (t) => {
+  let arrive;
+  const app = await ui(t, { invoke: (sub) => sub.startsWith('/backlinks')
+    ? new Promise((resolve) => { arrive = () => resolve({ links: [], mentions: [] }); }) : undefined });
+  await app.open();
+  await until(() => arrive);
+  const back = app.doc.querySelector('.fn-reader-back');
+  assert.equal(back.disabled, false);
+  back.click(); back.click();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(app.doc.querySelector('.fn-layout-reader'));
+  arrive();
+  await until(() => !app.doc.querySelector('.fn-layout-reader'));
 });
 
 test('a note page keeps the note central with a small Finder beside it, shares in a window, and goes back to the note', async (t) => {
@@ -778,6 +919,16 @@ test('a snapshot shows its trip’s items as cards that open in the plan, and / 
   chip.click(); await until(() => app.doc.querySelector('.fn-trek-pop .fn-trek[data-kind="place"]'));
   app.doc.querySelector('.fn-trek-pop .fn-trek-main').click();
   await until(() => !app.doc.querySelector('.fn-trek-pop'));
+  // On a phone the card is a sheet over a dimmed page, and the press on the dimmed page closes it without reaching the note.
+  const matchMedia = app.window.matchMedia;
+  app.window.matchMedia = (query) => ({ matches: /max-width: (700|860)px/.test(query), addEventListener() {}, removeEventListener() {} });
+  chip.click(); await until(() => app.doc.querySelector('.fn-trek-pop--sheet > .fn-sheet-grabber'));
+  const scrim = app.doc.querySelector('.fn-trek-scrim');
+  scrim.dispatchEvent(new app.window.Event('pointerdown', { bubbles: true }));
+  assert.ok(app.doc.querySelector('.fn-trek-pop'));
+  scrim.click();
+  await until(() => !app.doc.querySelector('.fn-trek-pop, .fn-trek-scrim'));
+  app.window.matchMedia = matchMedia;
 
   button(app, 'Edit Snapshot').click(); await until(() => app.doc.querySelector('#content-editor .cm-content'));
   await until(() => app.calls.some((call) => call.body?.action === 'objects' && !call.body.refs));
@@ -815,6 +966,9 @@ test('comments open in a side panel, for the whole note or a selected passage', 
   const app = await tripUi(t);
   button(app, 'Comments').click(); await until(() => app.doc.querySelector('.fn-comment-panel'));
   assert.match(app.doc.querySelector('.fn-comment-empty').textContent, /Select text/);
+  // On a phone only the body scrolls; the header and tabs stay above it.
+  const body = app.doc.querySelector('.fn-comment-panel > .fn-comment-panel-header + .fn-comment-tabs + .fn-comment-panel-body');
+  assert.ok(body.querySelector('.fn-comment-new'));
   app.input('.fn-comment-new textarea', 'Worth it for the airport train.'); app.click('Comment');
   await until(() => app.doc.querySelectorAll('.fn-comment-thread').length === 1);
   assert.equal(app.calls.find((call) => call.body?.action === 'comment_add').body.quote, undefined);
@@ -1597,6 +1751,27 @@ test('the outline lists a note’s headings and closes once one is chosen', asyn
   await until(() => !app.doc.querySelector('.fn-outline-popover'));
 });
 
+test('on a phone the outline is a sheet over a dimmed note, kept open by presses inside it and closed by the dimmed page',
+  async (t) => {
+  const app = await ui(t, { note: { content: '# Arrival\nLand at Haneda.\n## Keikyu line\nTo Shinagawa.' } });
+  await app.open();
+  await until(() => button(app, 'Outline'));
+  app.window.matchMedia = (query) => ({ matches: /max-width: (700|860)px/.test(query), addEventListener() {}, removeEventListener() {} });
+  button(app, 'Outline').click();
+  await until(() => app.doc.querySelector('.fn-outline-layer'));
+  const layer = app.doc.querySelector('.fn-outline-layer');
+  assert.equal(layer.parentElement, app.doc.body);
+  assert.equal(layer.querySelector('.fn-outline-sheet-title').textContent, 'Outline');
+  // Only the headings scroll, so the title stays put above them.
+  assert.equal(layer.querySelector('.fn-outline-sheet-items .fn-outline-sheet-title'), null);
+  assert.ok(layer.querySelector('.fn-outline-sheet-items .fn-outline-item'));
+  layer.querySelector('.fn-outline-item').dispatchEvent(new app.window.Event('pointerdown', { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(app.doc.querySelector('.fn-outline-layer'));
+  layer.querySelector('.fn-outline-scrim').click();
+  await until(() => !app.doc.querySelector('.fn-outline-layer'));
+});
+
 test('⌘O offers the notes opened last, finds a note, ⌘K runs a command, and Escape closes the switcher', async (t) => {
   const app = await ui(t, { invoke: (sub) => sub.startsWith('/link-targets')
     ? { notes: [{ id: '22222222-2222-2222-2222-222222222222', title: 'Osaka eats', path: 'Food' }] } : undefined });
@@ -1801,4 +1976,19 @@ test('a trip keeps what its editors remove in its own Recently deleted, and brin
   await until(() => app.calls.some((call) => call.body?.action === 'deleted_recover' && call.body.trip_id === 10
     && call.body.note_id === copy.id));
   await until(() => app.doc.querySelectorAll('[data-bin] .fn-finder-row').length === 1);
+});
+
+test('a phone’s plugin page keeps clear of TREK’s chrome itself only on a host older than 5.1.4', async (t) => {
+  const phone = { surface: 'plugin-page', formFactor: 'phone' };
+  for (const [trek, legacy] of [['5.1.3', true], ['5.0.0-pre.1', true], ['5.1.4', false], ['5.2.0', false], [null, false]]) {
+    const app = await ui(t, { viewport: phone, invoke: (sub) => (sub === '/host' ? { trek } : undefined) });
+    await until(() => app.calls.some((call) => call.sub === '/host'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(app.doc.documentElement.hasAttribute('data-legacy-host'), legacy, String(trek));
+  }
+  // Only the phone's plugin page asks: a desktop page and a trip tab never run under TREK's chrome.
+  for (const viewport of [{ surface: 'plugin-page', formFactor: 'desktop' }, { surface: 'trip-tab', formFactor: 'phone' }]) {
+    const app = await ui(t, { viewport, trip: viewport.surface === 'trip-tab' });
+    assert.ok(!app.calls.some((call) => call.sub === '/host'));
+  }
 });

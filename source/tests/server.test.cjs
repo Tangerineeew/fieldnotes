@@ -1744,3 +1744,20 @@ test('a trip’s removed notes are deleted permanently after 30 days', async (t)
     assert.equal(count(db, table, 'note_id = ?', note.id), 0, table);
   }
 });
+
+test('TREK’s version is read from its server package.json above the plugin process’s entry', async (t) => {
+  const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+  const { trekVersion } = require('../server/service.cjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fieldnotes-trek-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const entry = path.join(root, 'server/dist/nest/plugins/runtime/plugin-host-entry.js');
+  fs.mkdirSync(path.dirname(entry), { recursive: true });
+  // The root package.json is another package's; only TREK's server manifest counts.
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@trek/root', version: '9.9.9' }));
+  assert.equal(trekVersion(entry), null);
+  fs.writeFileSync(path.join(root, 'server/package.json'), JSON.stringify({ name: '@trek/server', version: '5.1.4' }));
+  assert.equal(trekVersion(entry), '5.1.4');
+  // The route answers from the test runner's own entry, which no TREK package sits above.
+  const { owner } = await setup(t);
+  assert.deepEqual((await owner.request('GET', '/host')).data, { trek: null });
+});

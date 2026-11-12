@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   HEADING_LINK, IMAGE_ERROR, embedSourcesInMarkdown, imageSourcesInMarkdown, isNoteId, referenceSourcesInMarkdown, renderMarkdownInto,
@@ -33,12 +33,15 @@ import {
 } from './comments';
 import { NARROW, isNarrow, isPhone, isRtl, prefersReducedMotion } from './media';
 import { store, stored } from './storage';
-import { useSheetDrag } from './sheet';
+import { useEdgeBack, useSheetDrag } from './sheet';
 import { moveInMenu, useDismiss } from './popover';
 import './fonts.css';
 import './style.css';
 
-type Context = { tripId: string | null; locale: string; userId: number };
+type Context = {
+  tripId: string | null; locale: string; userId: number; viewport?: { surface: string | null; formFactor: 'phone' | 'desktop' }
+};
+type RunOptions = { silent?: boolean; key?: string };
 type TripCreateIntent = { tripId: number; tripFolderId: string | null; title: string };
 type Note = {
   id: string; title: string; content: string; icon?: string | null; properties?: Property[]; version: number;
@@ -90,6 +93,9 @@ const draftOf = (note: Note): Draft => ({
   title: note.title, content: note.content, icon: note.icon || null, properties: note.properties || [],
   visibility: note.visibility || 'private', folder_id: note.folder_id || null
 });
+// TREK keeps a phone's plugin page clear of the status bar and dock from 5.1.4; an unknown version counts as a newer one.
+const versionKey = (version: string) => version.split(/[.-]/, 3).reduce((key, part) => key * 1000 + Number(part), 0);
+const isLegacyHost = (version: string | null | undefined) => Boolean(version) && versionKey(version!) < versionKey('5.1.4');
 const SORT_KEY = 'fieldnotes:sort';
 const DRAWERS_KEY = 'fieldnotes:drawers';
 // The library's column view holds every note at once instead of paging.
@@ -192,6 +198,8 @@ function App() {
   const [deletedMenu, setDeletedMenu] = useState<{ note: DeletedNote; at: MenuPoint } | null>(null);
   const [sortOpen, setSortOpen] = useState(false);
   const sortRoot = useRef<HTMLDivElement>(null);
+  const newFolderRoot = useRef<HTMLDivElement>(null);
+  const shell = useRef<HTMLElement>(null);
   const sortButton = useRef<HTMLButtonElement>(null);
   const [finderMenu, setFinderMenu] = useState<{ target: FinderTarget<Folder, Note>; at: MenuPoint } | null>(null);
   const [permissionFolderId, setPermissionFolderId] = useState<string | null>(null);
@@ -284,7 +292,12 @@ function App() {
   const [collabTrouble, setCollabTrouble] = useState('');
   const collab = useRef<CollabSession | null>(null);
   const [query, setQuery] = useState('');
-  const [contentMotion, setContentMotion] = useState<'forward' | 'backward' | 'neutral'>('neutral');
+  // Each swap of the column view slides the new content in; a counter, so the same direction twice still moves.
+  const [contentMotion, setContentMotion] = useState<{ way: 'forward' | 'backward'; at: number } | null>(null);
+  const slideContent = (way: 'forward' | 'backward') => setContentMotion((last) => ({ way, at: (last?.at ?? 0) + 1 }));
+  const finderCard = useRef<HTMLElement>(null);
+  // The library being switched to: its tab is chosen at the tap, while its notes are still on their way.
+  const [scopeTarget, setScopeTarget] = useState<boolean | null>(null);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [target, setTarget] = useState('');
   const [days, setDays] = useState<Day[]>([]);
@@ -331,6 +344,7 @@ function App() {
   const latestRequest = useRef(0);
   const permissionModal = useRef<HTMLElement>(null);
   const moveDialog = useRef<HTMLElement>(null);
+  const newFolderDialog = useRef<HTMLElement>(null);
   const noteBrowser = useRef<HTMLElement>(null);
   const permissionTrigger = useRef<HTMLElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
@@ -347,6 +361,22 @@ function App() {
   }, [selectedFolderId, folders, tripId, note, editing, permissionFolderId]);
 
   useEffect(() => trek.onContext(setContext), []);
+  const surface = context?.viewport?.surface;
+  const formFactor = context?.viewport?.formFactor;
+  useEffect(() => {
+    if (surface !== 'plugin-page' || formFactor !== 'phone') return;
+    invoke<{ trek: string | null }>('/host')
+      .then((host) => document.documentElement.toggleAttribute('data-legacy-host', isLegacyHost(host?.trek))).catch(() => {});
+  }, [surface, formFactor]);
+  // The slide plays once the new content is in place, from the side the move went toward, never on what is about to leave.
+  useLayoutEffect(() => {
+    const strip = finderCard.current?.querySelector<HTMLElement>(':scope > .fn-finder');
+    if (!contentMotion || !strip?.animate) return;
+    if (prefersReducedMotion()) { strip.animate([{ opacity: .7 }, { opacity: 1 }], { duration: 150, easing: 'ease' }); return; }
+    const from = (contentMotion.way === 'forward') !== isRtl() ? 10 : -10;
+    strip.animate([{ opacity: .45, transform: `translateX(${from}px)` }, { opacity: 1, transform: 'none' }],
+      { duration: 200, easing: 'cubic-bezier(.23, 1, .32, 1)' });
+  }, [contentMotion?.at]);
   // A quick action says nothing; only one still running after a moment says it is working.
   useEffect(() => {
     if (!busy || suppressBusyStatus) { setSlow(false); return; }
@@ -387,12 +417,22 @@ function App() {
     return () => window.clearInterval(timer);
   }, [tripId, note?.id, note?.unavailable]);
 
-  async function run(fn: () => Promise<unknown>, options: { silent?: boolean } = {}) {
-    if (lock.current) return;
-    lock.current = true; setBusy(true); setSuppressBusyStatus(Boolean(options.silent)); setError(''); setStatus('');
+  // Actions run one at a time. A tap that comes while one is running is kept, the latest only, and runs next, so no tap is lost
+  // in the moment before anything shows it is working; `key` names an action, so a second tap on the same thing is not run twice.
+  const queued = useRef<{ fn: () => Promise<unknown>; options: RunOptions } | null>(null);
+  const running = useRef<string | undefined>(undefined);
+  async function run(fn: () => Promise<unknown>, options: RunOptions = {}) {
+    if (lock.current) {
+      if (!options.key || options.key !== running.current) queued.current = { fn, options };
+      return;
+    }
+    lock.current = true; running.current = options.key;
+    setBusy(true); setSuppressBusyStatus(Boolean(options.silent)); setError(''); setStatus('');
     try { await fn(); }
     catch (error) { setError(messageOf(error)); }
-    finally { lock.current = false; setBusy(false); setSuppressBusyStatus(false); }
+    finally { lock.current = false; running.current = undefined; setBusy(false); setSuppressBusyStatus(false); }
+    const next = queued.current; queued.current = null;
+    if (next) await run(next.fn, next.options);
   }
   async function discard() {
     // Live editing saves as it goes: leaving the note flushes its last keystrokes and, if it changed, says so.
@@ -806,11 +846,11 @@ function App() {
     if (!tripId) { setTarget(''); setDayId(''); setDays([]); }
     const next = tripId ? item : await invoke<Note>(`/note?id=${encodeURIComponent(item.id)}`);
     setNote(next); setImageSources({}); setReferenceLinks({}); setDraft(next.unavailable ? empty : draftOf(next)); setEditing(false);
-    setContentMotion('neutral');
     setLinkedTrips([]); setComments([]); setPendingQuote(null); setActiveThread(null); setBacklinks([]); setMentions([]);
+    // The note is on screen; what fills in around it is fetched together, so the page is free again sooner.
     if (!next.unavailable) {
-      await hydrateImages(next, tripId); await hydrateReferences(next, tripId); await loadBacklinks(next);
-      await loadCollaborators(next); await loadLinkedTrips(next); await loadComments(next);
+      await Promise.all([hydrateImages(next, tripId), hydrateReferences(next, tripId), loadBacklinks(next), loadCollaborators(next),
+        loadLinkedTrips(next), loadComments(next)]);
     }
     return next;
   }
@@ -885,7 +925,7 @@ function App() {
   async function selectFolder(folderId: string | null) {
     if (!await discard()) return;
     const depth = (id: string | null) => finder.pathTo(id).length;
-    setContentMotion(depth(folderId) < depth(selectedFolderId) ? 'backward' : 'forward');
+    slideContent(depth(folderId) < depth(selectedFolderId) ? 'backward' : 'forward');
     setSelectedFolderId(folderId); setNote(null); setImageSources({}); setEditing(false); setPreviewId(null);
     setBinOpen(false);
   }
@@ -951,15 +991,17 @@ function App() {
   }
   // A new key starts in its natural order, names A to Z and dates newest first; the same key keeps its order.
   async function changeSorting(key: Sorting['key'], order = key === sorting.key ? sorting.order : key === 'name' ? 'asc' : 'desc') {
-    const next = { key, order }; setSorting(next); setSortOpen(false); setContentMotion('neutral');
+    const next = { key, order }; setSorting(next); setSortOpen(false);
     try { window.localStorage.setItem(SORT_KEY, JSON.stringify(next)); } catch { /* a convenience; the order still applies */ }
     if (!tripId) await load(query, publicMode, next);
   }
   // The other library is fetched first and swapped in whole, so no frame shows one library's notes under the other's name.
   async function switchLibrary(nextPublic: boolean) {
     if (!await discard()) return;
-    setContentMotion(nextPublic ? 'forward' : 'backward');
-    const loaded = await load('', nextPublic);
+    setScopeTarget(nextPublic);
+    let loaded: Note[];
+    try { loaded = await load('', nextPublic); } finally { setScopeTarget(null); }
+    slideContent(nextPublic ? 'forward' : 'backward');
     setPublicMode(nextPublic); setSelectedFolderId(null); setNote(null); setImageSources({}); setEditing(false);
     setQuery(''); setPreviewId(null); setBinOpen(false); setSelection([]);
     await restorePlace(folders, loaded, nextPublic);
@@ -1092,7 +1134,7 @@ function App() {
   }
   async function openBin() {
     if (!await discard()) return;
-    setContentMotion('forward'); setSelectedFolderId(null); setNote(null); setPreviewId(null); setDeletedRead(null); setBinOpen(true);
+    slideContent('forward'); setSelectedFolderId(null); setNote(null); setPreviewId(null); setDeletedRead(null); setBinOpen(true);
     await loadDeleted();
   }
   async function recoverNote(item: DeletedNote) {
@@ -1135,7 +1177,7 @@ function App() {
         run: () => void run(() => deleteNotes([note])) },
       tripId && canEditTrip && reading && { label: t('Remove from Trip', '从旅行移除'), icon: 'trash',
         run: () => void run(() => removeFromTrip(note)) },
-      note && !editing && { label: backLabel, icon: 'library', run: () => void run(backToLibrary) },
+      note && !editing && { label: backLabel, icon: 'library', run: () => void run(backToLibrary, { key: 'back' }) },
     ].filter((command): command is PaletteCommand => Boolean(command));
   }
   // Linked notes are named by their current titles, read from the open note's links or asked for.
@@ -1324,8 +1366,24 @@ function App() {
   }
   useEffect(() => { closeFolderPermissionsRef.current = closeFolderPermissions; });
   useDismiss(sortOpen, sortRoot, () => setSortOpen(false), sortButton);
+  // On a phone a new folder is named in a window near the top, clear of the keyboard; elsewhere in a popover under its button.
+  const newFolderSheet = newFolderOpen && isPhone();
+  useDismiss(newFolderOpen && !newFolderSheet, newFolderRoot, () => resetNewFolder(false));
+  // A swipe from the leading edge goes where the page's own back control goes: out of a note, up a folder, out of search or the bin.
+  useEdgeBack(shell, note || editing ? () => void run(backToLibrary, { key: 'back' })
+    : binOpen ? () => setBinOpen(false)
+    : results !== null ? () => void run(clearSearch, { silent: true })
+    : selectedFolderId ? () => void run(() => selectFolder(finder.pathTo(selectedFolderId).at(-2) ?? null), { silent: true })
+    : null);
   useDialogFocus(permissionModal, permissionFolderId, () => void closeFolderPermissionsRef.current(), permissionTrigger);
   useDialogFocus(moveDialog, moving?.[0].id, () => setMoving(null));
+  useDialogFocus(newFolderDialog, newFolderSheet || undefined, () => resetNewFolder(false));
+  // Its name field takes the focus rather than the close button, so typing can start at once.
+  useEffect(() => {
+    if (!newFolderSheet) return;
+    const timer = window.setTimeout(() => newFolderDialog.current?.querySelector<HTMLInputElement>('#new-folder-label')?.focus(), 0);
+    return () => window.clearTimeout(timer);
+  }, [newFolderSheet]);
   useDialogFocus(grantDialog, grantGap?.target.id, () => setGrantGap(null));
   useDialogFocus(shareDialog, shareOpen && note?.id, () => void run(closeShare, { silent: true }), shareTrigger);
   useDialogFocus(historyDialog, historyOpen && note?.id, () => setHistoryOpen(false), historyTrigger);
@@ -1449,22 +1507,23 @@ function App() {
     <div className="fn-folder-create-fields">
       <div className="fn-folder-icon-input">
         <label className="fn-visually-hidden" htmlFor="new-folder-icon">{t('Icon', '图标')}</label>
-        <input id="new-folder-icon" className="trek-input fn-emoji-input" maxLength={8} aria-label={t('Icon', '图标')}
+        <input id="new-folder-icon" className="trek-input fn-emoji-input" maxLength={8} autoComplete="off" aria-label={t('Icon', '图标')}
           aria-describedby="new-folder-icon-help" placeholder="" value={newFolderIcon}
           onChange={(event) => { setNewFolderIconTouched(true); setNewFolderIcon(event.target.value); }} />
         <small id="new-folder-icon-help" className="fn-folder-icon-help trek-muted">
           {t('Supports ≤8 characters and emoji', '支持≤8个字符和 emoji')}</small>
       </div>
       <div>
-        <label className="fn-visually-hidden" htmlFor="new-folder-name">{t('Folder name', '文件夹名称')}</label>
-        <input id="new-folder-name" className="trek-input" dir="auto" maxLength={80} placeholder={t('Folder name', '文件夹名称')}
-          value={newFolderName} onChange={(event) => {
+        <label className="fn-visually-hidden" htmlFor="new-folder-label">{t('Folder name', '文件夹名称')}</label>
+        <input id="new-folder-label" className="trek-input" dir="auto" maxLength={80} autoComplete="off"
+          placeholder={t('Folder name', '文件夹名称')} value={newFolderName} onChange={(event) => {
             const value = event.target.value; setNewFolderName(value);
             if (!newFolderIconTouched) { const icon = firstGrapheme(value.trim()); setNewFolderIcon(icon.length <= 8 ? icon : ''); }
           }} />
       </div>
     </div>
-    <button className="trek-btn trek-btn--secondary" disabled={!newFolderName.trim()}>{t('Create Folder', '创建文件夹')}</button>
+    <button className={`trek-btn ${newFolderSheet ? 'trek-btn--primary' : 'trek-btn--secondary'}`} disabled={!newFolderName.trim()}>
+      {t('Create Folder', '创建文件夹')}</button>
   </form>;
   const sortMenu = <div ref={sortRoot} className="fn-sort">
     <button ref={sortButton} type="button" className="trek-btn trek-btn--ghost fn-icon-button fn-sort-button" aria-haspopup="menu"
@@ -1552,19 +1611,20 @@ function App() {
     </nav>
     {/* Recently deleted has nothing to sort or create, so those stay in place but dimmed: the toolbar never shifts. */}
     {sortMenu}
-    <IconButton label={t('Refresh', '刷新')} icon="refresh" className="fn-refresh" disabled={busy}
-      onClick={() => void run(async () => { await loadFolders(); await load(); })} />
-    {(!tripId || canEditTrip) && <div className="fn-new-folder">
+    <IconButton label={t('Refresh', '刷新')} icon="refresh" className="fn-refresh" disabled={slow}
+      onClick={() => void run(async () => { await loadFolders(); await load(); }, { key: 'refresh' })} />
+    {(!tripId || canEditTrip) && <div ref={newFolderRoot} className="fn-new-folder">
       <IconButton label={t('New Folder', '新建文件夹')} icon="folder-plus" aria-expanded={newFolderOpen} disabled={binOpen}
         onClick={toggleNewFolder} />
-      {newFolderOpen && <div className="fn-new-folder-popover">{newFolderForm}</div>}
+      {newFolderOpen && !newFolderSheet && <div className="fn-new-folder-popover">{newFolderForm}</div>}
     </div>}
     {/* A new note lands in the open folder when you may write there, otherwise at the top of the library. */}
     {!tripId && <IconButton label={t('New Note', '新建笔记')} icon="note-plus" className="fn-new-note"
-      disabled={busy || binOpen} onClick={() => void run(() => startNote(openFolder?.role === 'editor' ? openFolder.id : null))} />}
+      disabled={slow || binOpen}
+      onClick={() => void run(() => startNote(openFolder?.role === 'editor' ? openFolder.id : null), { key: 'new-note' })} />}
     {/* A trip's note is written in the library, which keeps its original, and comes back here linked to the open folder. */}
     {tripId && canEditTrip && <IconButton label={t('New Note for This Trip', '为这次旅行新建笔记')} icon="note-plus"
-      className="fn-new-note" disabled={busy || binOpen} onClick={() => createForCurrentTrip(openFolder?.id ?? null)} />}
+      className="fn-new-note" disabled={slow || binOpen} onClick={() => createForCurrentTrip(openFolder?.id ?? null)} />}
     {tripId && <IconButton label={t('Open Fieldnotes Library', '打开 Fieldnotes 图书馆')} icon="open"
       onClick={() => trek.navigate('/plugins/fieldnotes')} />}
     {/* Search sits at the toolbar's trailing end, after the actions, as Apple places it; a phone gives it a line of its own. */}
@@ -1646,7 +1706,7 @@ function App() {
   const jumpTo = (heading: string) => { if (noteArticle.current) revealHeading(noteArticle.current, heading); };
   const sideDocked = Boolean(tripId && note && !note.unavailable && !editing && wide);
   const historyButton = <IconButton label={t('Version History', '版本历史')} icon="history" variant="secondary" aria-haspopup="dialog"
-    disabled={busy} onClick={() => {
+    disabled={slow} onClick={() => {
       historyTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setHistoryOpen(true);
     }} />;
@@ -1724,20 +1784,20 @@ function App() {
             {openThreads > 0 && <span className="fn-badge" aria-hidden="true">{openThreads}</span>}
           </IconButton>}
           {tripId && canEditTrip && note.mode === 'live' && note.can_snapshot && <IconButton label={t('Convert to Snapshot', '转为快照')}
-            icon="snapshot" variant="secondary" disabled={busy} onClick={() => void run(() => convertToSnapshot())} />}
+            icon="snapshot" variant="secondary" disabled={slow} onClick={() => void run(() => convertToSnapshot(), { key: 'convert' })} />}
           {tripId && canEditTrip && note.mode === 'snapshot' && <IconButton label={t('Edit Snapshot', '编辑快照')} icon="edit"
-            variant="secondary" disabled={busy} onClick={() => startEditing(note)} />}
+            variant="secondary" disabled={slow} onClick={() => startEditing(note)} />}
           {tripId && canEditTrip && note.mode === 'snapshot' && historyButton}
           {!tripId && note.can_edit && <IconButton label={t('Edit', '编辑')} icon="edit" variant="secondary"
-            disabled={busy} onClick={() => startEditing(note)} />}
+            disabled={slow} onClick={() => startEditing(note)} />}
           {!tripId && <IconButton label={t('Sharing', '共享')} icon="share" variant="secondary" className="fn-reader-share"
-            aria-haspopup="dialog" disabled={busy} onClick={openShare} />}
+            aria-haspopup="dialog" disabled={slow} onClick={openShare} />}
           {!tripId && note.can_edit && historyButton}
           {/* Deleting can be undone from its notice and from Recently Deleted, so it is a plain button, not a red one. */}
           {!tripId && owns(note) && <IconButton label={t('Delete Note', '删除笔记')} icon="trash" variant="secondary"
-            disabled={busy} onClick={() => void run(() => deleteNotes([note]))} />}
+            disabled={slow} onClick={() => void run(() => deleteNotes([note]), { key: 'delete' })} />}
           {tripId && canEditTrip && <IconButton label={t('Remove from Trip', '从旅行移除')} icon="trash" variant="secondary"
-            disabled={busy} onClick={() => void run(() => removeFromTrip())} />}
+            disabled={slow} onClick={() => void run(() => removeFromTrip(), { key: 'remove' })} />}
         </div>
       </div>
       {note.mode && <div className="trek-cluster">{noteMode(note.mode)}</div>}
@@ -1758,7 +1818,7 @@ function App() {
     </>}
   </section>;
 
-  return <main className="fn-shell" data-view={note || editing ? undefined : 'library'}>
+  return <main ref={shell} className="fn-shell" data-view={note || editing ? undefined : 'library'}>
     <header className="fn-header">
       <div className="fn-heading">
         <span className="fn-symbol" aria-hidden="true"><i /><i /><i /></span>
@@ -1774,19 +1834,21 @@ function App() {
     </header>
     {error && <div className="fn-error" role="alert">{error}</div>}
     {!tripId && !note && !editing && <div className="fn-scope-switcher" role="tablist" aria-label={t('Library scope', '图书馆范围')}
-      data-scope={publicMode ? 'public' : 'private'}>
+      data-scope={(scopeTarget ?? publicMode) ? 'public' : 'private'}>
       <span className="fn-scope-indicator" aria-hidden="true" />
-      <button type="button" role="tab" aria-selected={!publicMode} className={`fn-scope-tab${dragClass('library-private')}`}
-        disabled={busy} {...libraryDropProps('private')}
-        onClick={() => void run(() => switchLibrary(false))}>{t('Private Library', '私人图书馆')}</button>
-      <button type="button" role="tab" aria-selected={publicMode} className={`fn-scope-tab${dragClass('library-public')}`}
-        disabled={busy} {...libraryDropProps('public')}
-        onClick={() => void run(() => switchLibrary(true))}>{t('Public Library', '公开图书馆')}</button>
+      <button type="button" role="tab" aria-selected={!(scopeTarget ?? publicMode)}
+        className={`fn-scope-tab${dragClass('library-private')}`}
+        disabled={slow} {...libraryDropProps('private')}
+        onClick={() => void run(() => switchLibrary(false), { key: 'library' })}>{t('Private Library', '私人图书馆')}</button>
+      <button type="button" role="tab" aria-selected={scopeTarget ?? publicMode} className={`fn-scope-tab${dragClass('library-public')}`}
+        disabled={slow} {...libraryDropProps('public')}
+        onClick={() => void run(() => switchLibrary(true), { key: 'library' })}>{t('Public Library', '公开图书馆')}</button>
     </div>}
     {note || editing ? <div className="fn-layout fn-layout-reader" data-tree={drawers.tree || undefined}
       data-side={(sideDocked && (commentsOpen || (outlineOpen && noteHeadings.length >= 2))) || undefined} aria-busy={busy}>
         <div className="fn-reader-column">
-          <button type="button" className="trek-btn trek-btn--ghost fn-reader-back" onClick={() => void run(backToLibrary)}>
+          <button type="button" className="trek-btn trek-btn--ghost fn-reader-back"
+            onClick={() => void run(backToLibrary, { key: 'back' })}>
             <Icon name="chevron-left" /><bdi>{backLabel}</bdi></button>
           {workspace}
         </div>
@@ -1816,7 +1878,7 @@ function App() {
         {tripId && <div className="fn-comment-scrim" data-open={(note && !editing && commentsOpen) || undefined} aria-hidden="true"
           onClick={closeComments} />}
       </div>
-      : <section className="trek-card fn-finder-card" data-motion={contentMotion} aria-busy={busy} aria-label={rootLabel}>
+      : <section ref={finderCard} className="trek-card fn-finder-card" aria-busy={busy} aria-label={rootLabel}>
         {finderToolbar}
         {!ready ? <ul className="fn-note-list fn-note-skeleton" aria-hidden="true">
           {[0, 1, 2, 3].map((index) => <li key={index}><span className="trek-skeleton" /><span className="trek-skeleton" /></li>)}
@@ -1834,10 +1896,11 @@ function App() {
             noteDrag: (item) => ({ draggable: tripId ? canEditTrip : owns(item as Note),
               onDragStart: (event) => dragStart(item.id, item.title, event), onDragEnd: endDrag }) }}
           selection={selection} onSelection={setSelection}
-          onFolder={(folderId) => void run(() => selectFolder(folderId), { silent: true })}
-          onPreview={(item) => void run(() => previewNote(item), { silent: true })}
+          onFolder={(folderId) => void run(() => selectFolder(folderId), { silent: true, key: `folder:${folderId}` })}
+          onPreview={(item) => void run(() => previewNote(item), { silent: true, key: `preview:${item.id}` })}
           menuId={menuSubject?.id ?? null}
-          onOpen={(item) => void run(() => choose(item))} onMenu={(target, at) => setFinderMenu({ target, at })} t={t} />}
+          onOpen={(item) => void run(() => choose(item), { key: `open:${item.id}` })}
+          onMenu={(target, at) => setFinderMenu({ target, at })} t={t} />}
         {deletedMenu && <ContextMenu at={deletedMenu.at} label={deletedMenu.note.title} onClose={() => setDeletedMenu(null)}
           items={[{ label: t('Recover', '恢复'), icon: 'reopen', onSelect: () => void run(() => recoverNote(deletedMenu.note)) },
             'separator', { label: t('Delete Permanently', '永久删除'), icon: 'trash', danger: true,
@@ -1848,6 +1911,10 @@ function App() {
         {finderMenu && <ContextMenu at={finderMenu.at} items={finderMenuItems(finderMenu.target)} onClose={() => setFinderMenu(null)}
           label={menuSubject?.label ?? rootLabel} />}
       </section>}
+    <Presence>{newFolderSheet && <Modal dialog={newFolderDialog} titleId="new-folder-title" className="fn-new-folder-modal"
+      title={t('New Folder', '新建文件夹')} sheet={false} t={t} onClose={() => resetNewFolder(false)}>
+      {newFolderForm}
+    </Modal>}</Presence>
     <Presence>{moving && <Modal dialog={moveDialog} titleId="move-title" className="fn-move-modal"
       title={moving.length > 1 ? t('Move {count} Items', '移动 {count} 项', { count: moving.length })
         : t('Move “{name}”', '移动“{name}”', { name: nameOf(moving[0].id) })}
@@ -2119,20 +2186,20 @@ function ConfirmDialog({ request, t, onAnswer }: { request: ConfirmRequest; t: T
 }
 
 // A window over the page: the header stays put and the body scrolls inside the rounded card. A press on the backdrop closes it.
-function Modal({ dialog, titleId, eyebrow, title, className, t, onClose, children }: {
-  dialog: React.RefObject<HTMLElement | null>; titleId: string; eyebrow?: string; title: string; className?: string; t: Translate;
-  onClose: () => void; children: React.ReactNode;
+function Modal({ dialog, titleId, eyebrow, title, className, sheet = true, t, onClose, children }: {
+  dialog: React.RefObject<HTMLElement | null>; titleId: string; eyebrow?: string; title: string; className?: string; sheet?: boolean;
+  t: Translate; onClose: () => void; children: React.ReactNode;
 }) {
   // Closing waits for the click, so the leaving window's backdrop is gone only after it has taken the whole press; it must also
   // start on the backdrop, so a text selection dragged out of the window does not close it.
   const pressed = useRef(false);
-  useSheetDrag(dialog, isPhone(), onClose);
+  useSheetDrag(dialog, sheet && isPhone(), onClose);
   return <div className="fn-modal-backdrop" role="presentation"
     onMouseDown={(event) => { pressed.current = event.target === event.currentTarget; }}
     onClick={(event) => { if (pressed.current && event.target === event.currentTarget) onClose(); pressed.current = false; }}>
     <section ref={dialog as React.RefObject<HTMLElement>} className={`fn-modal trek-card${className ? ` ${className}` : ''}`} role="dialog"
       aria-modal="true" aria-labelledby={titleId}>
-      <div className="fn-sheet-grabber" aria-hidden="true" />
+      {sheet && <div className="fn-sheet-grabber" aria-hidden="true" />}
       <header className="fn-modal-header">
         <h2 id={titleId} className={eyebrow ? 'fn-folder-title' : undefined}>
           {eyebrow ? <><span className="fn-eyebrow trek-muted">{eyebrow}</span><span>{title}</span></> : title}

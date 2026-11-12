@@ -2,7 +2,7 @@
   "id": "fieldnotes-trip",
   "name": "Trip Fieldnotes",
   "description": "A notes tab in every trip: read and discuss what you share from Fieldnotes, with bookings as cards. Requires Fieldnotes.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "apiVersion": 1,
   "type": "trip-page",
   "author": "Tangerineeew",

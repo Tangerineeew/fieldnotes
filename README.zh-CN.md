@@ -10,7 +10,7 @@ Fieldnotes 是自托管旅行规划工具 [TREK](https://github.com/mauriceboe/T
 
 ## 截图
 
-![Fieldnotes：浅色主题下分栏浏览的图书馆，后面立着深色主题下的同一个图书馆](./docs/screenshot.zh-CN.png)
+![Fieldnotes：MacBook 上的 Safari 里，浅色主题下分栏浏览的图书馆；前面的 iPhone 上是深色主题下的同一篇笔记](./docs/screenshot.zh-CN.png)
 
 ## 功能
 

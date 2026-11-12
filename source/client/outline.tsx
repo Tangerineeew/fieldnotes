@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Icon } from './icons';
+import { isPhone } from './media';
 import { useDismiss } from './popover';
+import { useSheetDrag } from './sheet';
 import type { Heading } from './markdown';
 import type { Translate } from './i18n';
 
@@ -13,19 +16,31 @@ export function Outline({ headings, onJump, docked, t }: {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
-  useDismiss(open, root, () => setOpen(false), trigger);
-  useEffect(() => { if (open) root.current?.querySelector<HTMLButtonElement>('.fn-outline-item')?.focus(); }, [open]);
+  const layer = useRef<HTMLDivElement>(null);
+  const sheet = useRef<HTMLElement>(null);
+  useDismiss(open, root, () => setOpen(false), trigger, layer);
+  useSheetDrag(sheet, open && !docked && isPhone(), () => setOpen(false));
+  useEffect(() => { if (open) (layer.current ?? root.current)?.querySelector<HTMLButtonElement>('.fn-outline-item')?.focus(); }, [open]);
   useEffect(() => { if (docked) setOpen(false); }, [Boolean(docked)]);
   if (headings.length < 2) return null;
+  const items = <OutlineItems headings={headings} onJump={(heading) => { setOpen(false); onJump(heading); }} />;
   return <div ref={root} className="fn-outline">
     {docked ? <button type="button" className="trek-btn trek-btn--secondary fn-icon-button fn-outline-toggle" aria-pressed={docked.open}
       aria-label={t('Outline', '大纲')} title={t('Outline', '大纲')} onClick={() => docked.onToggle(!docked.open)}>
       <Icon name="outline" /></button>
       : <button ref={trigger} type="button" className="trek-btn trek-btn--secondary fn-icon-button" aria-expanded={open}
         aria-label={t('Outline', '大纲')} title={t('Outline', '大纲')} onClick={() => setOpen(!open)}><Icon name="outline" /></button>}
-    {open && !docked && <nav className="fn-outline-popover" aria-label={t('Outline', '大纲')}>
-      <OutlineItems headings={headings} onJump={(heading) => { setOpen(false); onJump(heading); }} />
-    </nav>}
+    {open && !docked && !isPhone() && <nav className="fn-outline-popover" aria-label={t('Outline', '大纲')}>{items}</nav>}
+    {/* On a phone the outline is a sheet over the whole screen, so it leaves the note card, whose container query would hold it.
+        The dimmed page behind it takes the press that closes it, so the press goes no further. Only the headings scroll. */}
+    {open && !docked && isPhone() && createPortal(<div ref={layer} className="fn-outline-layer">
+      <div className="fn-outline-scrim" aria-hidden="true" onClick={() => setOpen(false)} />
+      <nav ref={sheet} className="fn-outline-sheet" aria-label={t('Outline', '大纲')}>
+        <div className="fn-sheet-grabber" aria-hidden="true" />
+        <p className="fn-menu-sheet-title fn-outline-sheet-title">{t('Outline', '大纲')}</p>
+        <div className="fn-outline-sheet-items">{items}</div>
+      </nav>
+    </div>, document.body)}
   </div>;
 }
 

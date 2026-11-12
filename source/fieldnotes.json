@@ -2,7 +2,7 @@
   "id": "fieldnotes",
   "name": "Fieldnotes",
   "description": "A private Markdown library for your travel know-how: write it once, bring it into every trip. Pairs with Trip Fieldnotes.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "apiVersion": 1,
   "type": "page",
   "author": "Tangerineeew",

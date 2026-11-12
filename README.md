@@ -10,7 +10,7 @@ Works with TREK 4.1 or later; add [Trip Fieldnotes](https://github.com/Tangerine
 
 ## Screenshots
 
-![Fieldnotes: the library in columns in the light theme, with the same library in the dark theme standing behind it](./docs/screenshot.png)
+![Fieldnotes: the library in columns in the light theme in Safari on a MacBook, with the same note in the dark theme on an iPhone in front](./docs/screenshot.png)
 
 ## What it does
 

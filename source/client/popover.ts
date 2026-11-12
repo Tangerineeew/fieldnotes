@@ -3,13 +3,17 @@ import type React from 'react';
 
 
 // Closes a popover on a press outside `root` or on Escape, while it is open. Escape also gives focus back to `trigger`, since
-// the focused item inside the popover goes with it; a press outside leaves focus where the press put it.
+// the focused item inside the popover goes with it; a press outside leaves focus where the press put it. `also` is a part of the
+// popover rendered elsewhere in the document, such as a sheet portalled to the body.
 export function useDismiss(open: boolean, root: React.RefObject<HTMLElement | null>, close: () => void,
-  trigger?: React.RefObject<HTMLElement | null>) {
+  trigger?: React.RefObject<HTMLElement | null>, also?: React.RefObject<HTMLElement | null>) {
   const latest = useRef(close); latest.current = close;
   useEffect(() => {
     if (!open) return;
-    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) latest.current(); };
+    const outside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (!root.current?.contains(target) && !also?.current?.contains(target)) latest.current();
+    };
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { latest.current(); trigger?.current?.focus(); } };
     document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape);
     return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); };

@@ -9785,8 +9785,10 @@ var require_service = __commonJS({
     "use strict";
     var { randomUUID } = require("node:crypto");
     var dns = require("node:dns/promises");
+    var fs = require("node:fs");
     var https = require("node:https");
     var { isIP } = require("node:net");
+    var path = require("node:path");
     var {
       assetBatch,
       maxImageBytes,
@@ -11206,8 +11208,8 @@ var require_service = __commonJS({
       for (const row of rows) {
         if (!noteAccessFromRows(userId, row, access).canRead) continue;
         if (raw.includes("/")) {
-          const path = row.folder_id ? await folderPath(ctx, row.folder_id) : "";
-          if (`${path ? `${path}/` : ""}${row.title}` !== raw) continue;
+          const path2 = row.folder_id ? await folderPath(ctx, row.folder_id) : "";
+          if (`${path2 ? `${path2}/` : ""}${row.title}` !== raw) continue;
         }
         return found(decode(row));
       }
@@ -11770,8 +11772,19 @@ ${propertyText(note.properties)}`);
         icon: noteIcon(version.icon)
       }, { force: true });
     }
+    function trekVersion(entry = process.argv[1] || "") {
+      for (let dir = path.dirname(entry); ; dir = path.dirname(dir)) {
+        try {
+          const manifest = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+          if (manifest.name === "@trek/server" && typeof manifest.version === "string") return manifest.version;
+        } catch {
+        }
+        if (path.dirname(dir) === dir) return null;
+      }
+    }
     async function handle2(action, req, ctx) {
       const userId = actor(req);
+      if (action === "host") return { trek: trekVersion() };
       if (action === "part") return parts.store(ctx, userId, req.body);
       const body = await parts.expand(ctx, userId, req.body || {});
       const query = req.query || {};
@@ -12005,7 +12018,7 @@ ${propertyText(note.properties)}`);
         return json(200, { error: problem.message, status: problem.status, template: problem.template, params: problem.params });
       }
     }
-    module2.exports = { initialize: initialize2, handle: handle2, tripAction: tripAction2, respond: respond2, deleteUserData: deleteUserData2, exportUserData: exportUserData2 };
+    module2.exports = { initialize: initialize2, handle: handle2, tripAction: tripAction2, respond: respond2, deleteUserData: deleteUserData2, exportUserData: exportUserData2, trekVersion };
   }
 });
 
@@ -12043,7 +12056,8 @@ var endpoints = [
   ["POST", "/part", "part"],
   ["GET", "/deleted", "deleted"],
   ["POST", "/deleted", "deleted_action"],
-  ["POST", "/assets", "assets"]
+  ["POST", "/assets", "assets"],
+  ["GET", "/host", "host"]
 ];
 module.exports = definePlugin({
   onLoad: initialize,

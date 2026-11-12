@@ -232,6 +232,8 @@ export function CommentPanel({ open, threads, located, pending, activeId, userId
         {t('Resolved · {count}', '已解决 · {count}', { count: resolved.length })}
       </button>
     </div>
+    {/* As a sheet only this part scrolls, under a header and tabs that stay put; beside the note it is part of the panel's grid. */}
+    <div className="fn-comment-panel-body">
     {!showResolved && <div className="fn-comment-new">
       {pending && <blockquote className="fn-comment-quote" dir="auto">
         <span>{pending.quote}</span>
@@ -266,5 +268,6 @@ export function CommentPanel({ open, threads, located, pending, activeId, userId
       : <p className="trek-muted fn-comment-empty">{showResolved ? t('No resolved comments.', '没有已解决的评论。') : <>
         <span>{t('No comments yet…', '还没有评论…')}</span><span>{t('Select text in the note to comment.', '选中正文即可发表评论哦！')}</span>
       </>}</p>}
+    </div>
   </aside>;
 }
