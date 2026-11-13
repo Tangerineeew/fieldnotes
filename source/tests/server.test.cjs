@@ -392,6 +392,20 @@ test('private notes support explicit editors without granting sharing control', 
   assert.equal((await editor.request('GET', '/note', {}, { id: note.id })).status, 404);
 });
 
+test('a member of someone else\'s trip can share with the trip owner', async (t) => {
+  const { host } = await setup(t);
+  // The real host's member list leaves out the owner, unlike the shared fixtures, while its user reads still count the owner
+  // as sharing the trip (TREK 5.1.4 sharesTripWith); the SDK mock checks members only.
+  const member = host(2, { trips: { 40: { members: [2], data: { id: 40, user_id: 1, title: 'Osaka' } } } });
+  member.ctx.users.getById = async (id) => (id === 1 ? { id: 1, display_name: 'Tangerine' } : null);
+  const note = await create(member);
+  const people = await member.request('GET', '/collaborators', {}, { note_id: note.id });
+  assert.equal(people.status, 200);
+  assert.deepEqual(people.data.candidates.map((person) => person.id), [1]);
+  assert.equal(people.data.candidates[0].display_name, 'Tangerine');
+  assert.equal((await member.request('POST', '/collaborator', { action: 'add', note_id: note.id, user_id: 1, role: 'editor' })).status, 200);
+});
+
 test('bulk collaborator role updates commit atomically for notes and folders', async (t) => {
   const { owner, db } = await setup(t);
   const note = await create(owner);

@@ -10125,6 +10125,10 @@ var require_service = __commonJS({
         for (const member of await ctx.trips.members(Number(trip.id))) {
           if (member.id !== userId) candidates.set(member.id, member);
         }
+        const ownerId = Number(trip.user_id);
+        if (ownerId && ownerId !== userId && !candidates.has(ownerId)) {
+          candidates.set(ownerId, await ctx.users.getById(ownerId) || { id: ownerId });
+        }
       }
       return candidates;
     }

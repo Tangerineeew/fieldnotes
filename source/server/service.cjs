@@ -783,6 +783,11 @@ async function collaborationCandidates(ctx, userId) {
     for (const member of await ctx.trips.members(Number(trip.id))) {
       if (member.id !== userId) candidates.set(member.id, member);
     }
+    // The host's member list leaves out the trip's owner.
+    const ownerId = Number(trip.user_id);
+    if (ownerId && ownerId !== userId && !candidates.has(ownerId)) {
+      candidates.set(ownerId, await ctx.users.getById(ownerId) || { id: ownerId });
+    }
   }
   return candidates;
 }
